@@ -3,6 +3,8 @@ import Network
 import NetworkExtension
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
+    private let masterDNSHandshakeTimeout: TimeInterval = 25
+    private let masterDNSHandshakePollIntervalNS: UInt64 = 250_000_000
     private let repository = ProfileRepository()
     private let engineRuntime = EngineRuntime()
     private let hevRunner = HevSocks5TunnelRunner()
@@ -30,6 +32,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     socksAddress: AppConstants.defaultSocksAddress
                 ) { [weak self] line in
                     self?.log(line)
+                }
+                if profile.tunnelProtocol == .masterdns {
+                    telemetry.setPhase("engine handshake")
+                    try await waitForMasterDNSHandshake()
                 }
                 telemetry.setPhase("packet bridge starting")
                 try hevRunner.start(
@@ -141,7 +147,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         telemetryTimer = nil
     }
 
-    private func writeTelemetrySnapshot(forceLog: Bool) {
+    @discardableResult
+    private func writeTelemetrySnapshot(forceLog: Bool) -> TunnelMetrics {
         let metrics = telemetry.snapshot(
             hev: hevRunner.snapshot(),
             engineStatusJSON: engineRuntime.statusJSON()
@@ -150,7 +157,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         telemetryTick += 1
         guard forceLog || telemetryTick % 5 == 0 else {
-            return
+            return metrics
         }
         log(
             "traffic(packet-flow): up=\(formatBytes(metrics.uploadBytes)) down=\(formatBytes(metrics.downloadBytes)) " +
@@ -162,6 +169,46 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             "fec-recovered=\(metrics.fecRecoveredPackets ?? 0) " +
             "configured-send=\(metrics.sendsPerPacket ?? 1)x errors=r\(metrics.bridgeReadErrors)/w\(metrics.bridgeWriteErrors)/short\(metrics.bridgeShortWrites)"
         )
+        return metrics
+    }
+
+    private func waitForMasterDNSHandshake() async throws {
+        let deadline = Date().addingTimeInterval(masterDNSHandshakeTimeout)
+        while Date() < deadline {
+            let metrics = writeTelemetrySnapshot(forceLog: false)
+            if metrics.sessionID != nil, (metrics.acceptedResolvers ?? 0) > 0 {
+                log("MasterDnsVPN handshake verified: session=\(metrics.sessionID ?? 0), resolver=\(metrics.resolverAddress ?? "unknown")")
+                return
+            }
+            if let failure = masterDNSStartupFailure(in: metrics) {
+                throw TunnelRuntimeError.engineHandshakeFailed(failure)
+            }
+            try await Task.sleep(nanoseconds: masterDNSHandshakePollIntervalNS)
+        }
+
+        let metrics = writeTelemetrySnapshot(forceLog: true)
+        let detail = metrics.lastError
+            ?? metrics.engineLastError
+            ?? metrics.lastLogLine
+            ?? "session was not initialized within \(Int(masterDNSHandshakeTimeout)) seconds"
+        throw TunnelRuntimeError.engineHandshakeFailed(detail)
+    }
+
+    private func masterDNSStartupFailure(in metrics: TunnelMetrics) -> String? {
+        if metrics.status == "failed" {
+            return metrics.lastError ?? metrics.engineLastError ?? "engine reported failed status"
+        }
+
+        let candidates = [metrics.lastError, metrics.engineLastError, metrics.lastLogLine]
+        for value in candidates.compactMap({ $0 }) {
+            let lowercased = value.lowercased()
+            if lowercased.contains("mtu tests failed")
+                || lowercased.contains("no valid connections")
+                || lowercased.contains("upload_mtu") {
+                return value
+            }
+        }
+        return nil
     }
 
     private func formatBytes(_ bytes: UInt64) -> String {

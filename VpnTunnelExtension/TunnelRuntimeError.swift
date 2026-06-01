@@ -5,6 +5,7 @@ enum TunnelRuntimeError: LocalizedError {
     case missingHevSocks5Tunnel
     case hevIntegrationNotConfigured(String)
     case missingProfile
+    case engineHandshakeFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +17,8 @@ enum TunnelRuntimeError: LocalizedError {
             return "HevSocks5Tunnel adapter is not configured: \(reason)"
         case .missingProfile:
             return "VPN profile was not provided"
+        case .engineHandshakeFailed(let detail):
+            return "MasterDnsVPN handshake failed: \(detail)"
         }
     }
 }

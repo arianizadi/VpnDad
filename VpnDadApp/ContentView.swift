@@ -558,7 +558,7 @@ struct HealthSummaryView: View {
             Text(report.summary)
                 .font(.subheadline)
 
-            ForEach(Array(report.evidence.prefix(5)), id: \.self) { item in
+            ForEach(Array(report.evidence.prefix(5).enumerated()), id: \.offset) { _, item in
                 Label(item, systemImage: "smallcircle.filled.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
