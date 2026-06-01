@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "Example MasterDNS",
+  "protocol": "masterdns",
+  "domain": "dns-tunnel.example.com",
+  "expectedExitIP": "203.0.113.20",
+  "resolvers": [
+    {
+      "type": "udp",
+      "address": "203.0.113.10:53"
+    }
+  ],
+  "masterdns": {
+    "encryptionKey": "REPLACE_WITH_SHARED_MASTERDNS_KEY",
+    "encryptionMethod": 5,
+    "baseEncodeData": false
+  }
+}

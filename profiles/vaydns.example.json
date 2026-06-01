@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "Example VayDNS",
+  "protocol": "vaydns",
+  "domain": "vaydns-tunnel.example.com",
+  "expectedExitIP": "203.0.113.40",
+  "resolvers": [
+    {
+      "type": "udp",
+      "address": "1.1.1.1:53"
+    },
+    {
+      "type": "doh",
+      "address": "https://cloudflare-dns.com/dns-query"
+    }
+  ],
+  "vaydns": {
+    "publicKey": "REPLACE_WITH_VAYDNS_PUBLIC_KEY",
+    "recordType": "txt",
+    "maxQnameLen": 101
+  }
+}

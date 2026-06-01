@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "name": "Example MasterDNS Custom FEC",
+  "protocol": "masterdns",
+  "domain": "fec-tunnel.example.com",
+  "expectedExitIP": "203.0.113.30",
+  "resolvers": [
+    {
+      "type": "udp",
+      "address": "203.0.113.11:53"
+    }
+  ],
+  "masterdns": {
+    "encryptionKey": "REPLACE_WITH_SHARED_MASTERDNS_KEY",
+    "encryptionMethod": 5,
+    "baseEncodeData": false,
+    "fecEnabled": true,
+    "fecDirection": "download",
+    "fecGroupSize": 8,
+    "fecOverheadPercent": 15,
+    "fecSymbolSize": 0,
+    "fecFlushTimeoutMs": 25
+  }
+}

@@ -1,0 +1,35 @@
+.DS_Store
+
+# Xcode user state and local build output
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.moved-aside
+*.xcscmblueprint
+*.hmap
+*.ipa
+*.xcarchive/
+*.dSYM/
+
+# Signing material and provisioning profiles
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.cer
+*.key
+*.pem
+*.der
+
+# Generated native dependencies. Rebuild these with scripts/ before building.
+Vendor/*.xcframework/
+Vendor/hev-socks5-tunnel-src/
+
+# Real connection profiles can contain endpoints and shared keys.
+profiles/*.json
+!profiles/*.example.json
+
+# Local environment files
+.env
+.env.*
+*.local
