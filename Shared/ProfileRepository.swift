@@ -296,6 +296,38 @@ final class ProfileRepository {
         return stored
     }
 
+    func updateProfile(_ profile: VPNProfile) throws -> VPNProfile {
+        let existing = try loadProfiles().first { $0.id == profile.id }
+        var updated = profile.normalizedForStorage()
+
+        if var settings = updated.masterdns {
+            if settings.encryptionKey?.isEmpty != false,
+               settings.encryptionKeyRef == nil {
+                settings.encryptionKeyRef = existing?.masterdns?.encryptionKeyRef
+            }
+            updated.masterdns = settings
+        }
+
+        _ = try resolved(updated)
+
+        if var settings = updated.masterdns, let key = settings.encryptionKey, !key.isEmpty {
+            let reference = settings.encryptionKeyRef ?? secretReference(for: updated.id, field: "masterdns.encryptionKey")
+            try keychain.set(key, account: reference)
+            settings.encryptionKey = nil
+            settings.encryptionKeyRef = reference
+            updated.masterdns = settings
+        }
+
+        var profiles = try loadProfiles()
+        guard profiles.contains(where: { $0.id == updated.id }) else {
+            throw ProfileRepositoryError.profileNotFound
+        }
+        profiles.removeAll { $0.id == updated.id }
+        profiles.append(updated)
+        try saveProfiles(profiles)
+        return updated
+    }
+
     func deleteProfile(_ profile: VPNProfile) throws {
         if let reference = profile.masterdns?.encryptionKeyRef {
             try keychain.delete(account: reference)

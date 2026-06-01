@@ -92,6 +92,7 @@ struct ProfileDetailView: View {
     @State private var exportDocument = ProfileDocument()
     @State private var diagnosticExporting = false
     @State private var diagnosticDocument = ProfileDocument()
+    @State private var editingProfile = false
 
     private let healthProbeColumns = [
         GridItem(.flexible(), spacing: 8),
@@ -286,11 +287,23 @@ struct ProfileDetailView: View {
         .navigationTitle(profile.name)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    editingProfile = true
+                } label: {
+                    Label("Edit", systemImage: "slider.horizontal.3")
+                }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button(role: .destructive) {
                     model.delete(profile)
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
+            }
+        }
+        .sheet(isPresented: $editingProfile) {
+            ProfileEditorView(profile: profile) { updated in
+                model.update(updated)
             }
         }
         .fileExporter(
@@ -380,6 +393,152 @@ struct ProfileDetailView: View {
         } catch {
             model.errorMessage = error.localizedDescription
         }
+    }
+}
+
+struct ProfileEditorView: View {
+    let profile: VPNProfile
+    let onSave: (VPNProfile) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var domain: String
+    @State private var resolverAddress: String
+    @State private var expectedExitIP: String
+    @State private var encryptionLevel: String
+    @State private var fecLevel: String
+    @State private var baseEncodeData: Bool
+    @State private var replacementKey: String
+
+    private let encryptionLevels = ["standard", "strong", "maximum"]
+    private let fecLevels = ["none", "conservative", "balanced", "aggressive"]
+
+    init(profile: VPNProfile, onSave: @escaping (VPNProfile) -> Void) {
+        self.profile = profile
+        self.onSave = onSave
+        _name = State(initialValue: profile.name)
+        _domain = State(initialValue: profile.domain)
+        _resolverAddress = State(initialValue: profile.resolvers.first?.address ?? "")
+        _expectedExitIP = State(initialValue: profile.expectedExitIP ?? "")
+        let masterdns = profile.masterdns
+        _encryptionLevel = State(initialValue: Self.encryptionLevel(for: masterdns))
+        _fecLevel = State(initialValue: Self.fecLevel(for: masterdns))
+        _baseEncodeData = State(initialValue: masterdns?.baseEncodeData ?? false)
+        _replacementKey = State(initialValue: "")
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("Profile") {
+                    TextField("Name", text: $name)
+                    TextField("Domain", text: $domain)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Resolver", text: $resolverAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.numbersAndPunctuation)
+                    TextField("Expected Exit IP", text: $expectedExitIP)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.numbersAndPunctuation)
+                }
+
+                if profile.tunnelProtocol == .masterdns {
+                    Section("MasterDNS") {
+                        Picker("Encryption", selection: $encryptionLevel) {
+                            ForEach(encryptionLevels, id: \.self) { level in
+                                Text(level.capitalized).tag(level)
+                            }
+                        }
+                        Picker("FEC", selection: $fecLevel) {
+                            ForEach(fecLevels, id: \.self) { level in
+                                Text(level.capitalized).tag(level)
+                            }
+                        }
+                        Toggle("Base Encode", isOn: $baseEncodeData)
+                        SecureField("New Shared Key", text: $replacementKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                }
+            }
+            .navigationTitle("Edit Profile")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave(updatedProfile())
+                        dismiss()
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                              domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                              resolverAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+
+    private func updatedProfile() -> VPNProfile {
+        var updated = profile
+        updated.name = name
+        updated.domain = domain
+        updated.resolvers = [
+            ResolverEndpoint(type: profile.resolvers.first?.type ?? "udp", address: resolverAddress)
+        ]
+        let trimmedExpectedExitIP = expectedExitIP.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.expectedExitIP = trimmedExpectedExitIP.isEmpty ? nil : trimmedExpectedExitIP
+
+        if var settings = updated.masterdns {
+            settings.encryptionLevel = encryptionLevel
+            settings.encryptionMethod = MasterDNSSettings.encryptionMethod(forLevel: encryptionLevel) ?? settings.encryptionMethod
+            settings.baseEncodeData = baseEncodeData
+            settings.fecLevel = fecLevel
+            let key = replacementKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !key.isEmpty {
+                settings.encryptionKey = key
+                settings.encryptionKeyRef = nil
+            }
+            updated.masterdns = settings
+        }
+        return updated.normalizedForStorage()
+    }
+
+    private static func encryptionLevel(for settings: MasterDNSSettings?) -> String {
+        if let level = MasterDNSSettings.normalizedEncryptionLevel(settings?.encryptionLevel),
+           MasterDNSSettings.encryptionMethod(forLevel: level) != nil {
+            return level
+        }
+        switch settings?.encryptionMethod {
+        case 3:
+            return "standard"
+        case 4:
+            return "strong"
+        default:
+            return "maximum"
+        }
+    }
+
+    private static func fecLevel(for settings: MasterDNSSettings?) -> String {
+        if let level = MasterDNSSettings.normalizedFECLevel(settings?.fecLevel),
+           MasterDNSSettings.fecSettings(forLevel: level) != nil {
+            return level
+        }
+        guard settings?.fecEnabled == true else {
+            return "none"
+        }
+        if settings?.fecGroupSize == 16 && settings?.fecOverheadPercent == 40 {
+            return "aggressive"
+        }
+        if settings?.fecGroupSize == 12 && settings?.fecOverheadPercent == 25 {
+            return "balanced"
+        }
+        return "conservative"
     }
 }
 
@@ -885,6 +1044,15 @@ final class ProfileListModel: ObservableObject {
     func delete(_ profile: VPNProfile) {
         do {
             try repository.deleteProfile(profile)
+            reload()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func update(_ profile: VPNProfile) {
+        do {
+            _ = try repository.updateProfile(profile)
             reload()
         } catch {
             errorMessage = error.localizedDescription

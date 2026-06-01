@@ -904,7 +904,10 @@ enum HealthProbeRunner {
             return failed("Profile has no resolver", duration: 0, statusCode: nil)
         }
 
-        if profile.tunnelProtocol == .masterdns, let metrics {
+        if profile.tunnelProtocol == .masterdns {
+            guard let metrics else {
+                return HealthProbeCheck.notRun("Waiting for MasterDnsVPN engine metrics")
+            }
             let age = Int(Date().timeIntervalSince(metrics.updatedAt))
             if (metrics.acceptedResolvers ?? 0) > 0 {
                 return HealthProbeCheck(
@@ -922,6 +925,7 @@ enum HealthProbeRunner {
                     statusCode: nil
                 )
             }
+            return HealthProbeCheck.notRun("Waiting for MasterDnsVPN MTU results for \(metrics.resolverAddress ?? resolver.address)")
         }
 
         let query = dnsQueryData(hostname: "example.com", recordType: 1)

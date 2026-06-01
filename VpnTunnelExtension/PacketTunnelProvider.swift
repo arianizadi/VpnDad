@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import NetworkExtension
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
@@ -95,6 +96,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         let ipv4 = NEIPv4Settings(addresses: [AppConstants.tunnelIPv4Address], subnetMasks: ["255.255.255.0"])
         ipv4.includedRoutes = [NEIPv4Route.default()]
+        ipv4.excludedRoutes = excludedIPv4Routes(for: profile)
         settings.ipv4Settings = ipv4
 
         let ipv6 = NEIPv6Settings(
@@ -102,6 +104,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             networkPrefixLengths: [NSNumber(value: 64)]
         )
         ipv6.includedRoutes = [NEIPv6Route.default()]
+        ipv6.excludedRoutes = excludedIPv6Routes(for: profile)
         settings.ipv6Settings = ipv6
 
         let dns = NEDNSSettings(servers: [AppConstants.fakeDNSAddress])
@@ -163,6 +166,48 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func formatBytes(_ bytes: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .binary)
+    }
+
+    private func excludedIPv4Routes(for profile: VPNProfile) -> [NEIPv4Route] {
+        resolverHosts(for: profile).compactMap { host in
+            guard IPv4Address(host) != nil else {
+                return nil
+            }
+            return NEIPv4Route(destinationAddress: host, subnetMask: "255.255.255.255")
+        }
+    }
+
+    private func excludedIPv6Routes(for profile: VPNProfile) -> [NEIPv6Route] {
+        resolverHosts(for: profile).compactMap { host in
+            guard IPv6Address(host) != nil else {
+                return nil
+            }
+            return NEIPv6Route(destinationAddress: host, networkPrefixLength: 128)
+        }
+    }
+
+    private func resolverHosts(for profile: VPNProfile) -> [String] {
+        var seen = Set<String>()
+        return profile.resolvers.compactMap { resolver in
+            let host = resolverHost(from: resolver.address)
+            guard !host.isEmpty, seen.insert(host).inserted else {
+                return nil
+            }
+            return host
+        }
+    }
+
+    private func resolverHost(from address: String) -> String {
+        let value = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("["),
+           let end = value.firstIndex(of: "]") {
+            return String(value[value.index(after: value.startIndex)..<end])
+        }
+        if value.filter({ $0 == ":" }).count == 1,
+           let separator = value.lastIndex(of: ":") {
+            return String(value[..<separator])
+        }
+        return value
     }
 
     private func log(_ line: String) {
