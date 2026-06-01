@@ -532,6 +532,10 @@ final class HealthModel: ObservableObject {
         }
     }
 
+    func resetAutomaticRun() {
+        automaticRunProfileID = nil
+    }
+
     func runAutomaticIfNeeded(profile: VPNProfile, vpnStatus: NEVPNStatus, metrics: TunnelMetrics?) async {
         guard vpnStatus == .connected else {
             automaticRunProfileID = nil
@@ -541,7 +545,34 @@ final class HealthModel: ObservableObject {
             return
         }
         automaticRunProfileID = profile.id
-        await runAllChecks(profile: profile, vpnStatus: vpnStatus, metrics: metrics, trigger: "on-connect")
+        if profile.tunnelProtocol == .masterdns {
+            await runStartupChecks(profile: profile, vpnStatus: vpnStatus, metrics: metrics, trigger: "on-connect")
+        } else {
+            await runAllChecks(profile: profile, vpnStatus: vpnStatus, metrics: metrics, trigger: "on-connect")
+        }
+    }
+
+    func runStartupChecks(
+        profile: VPNProfile,
+        vpnStatus: NEVPNStatus,
+        metrics: TunnelMetrics?,
+        trigger: String
+    ) async {
+        guard !isRunningChecks else {
+            return
+        }
+        isRunningChecks = true
+        runningProbeKind = nil
+        lastError = nil
+        let snapshot = await HealthProbeRunner.runStartup(
+            profile: profile,
+            vpnStatus: vpnStatus,
+            metrics: metrics,
+            previous: currentSnapshot(for: profile),
+            trigger: trigger
+        )
+        await finish(snapshot)
+        isRunningChecks = false
     }
 
     func runAllChecks(
@@ -668,6 +699,45 @@ enum HealthProbeRunner {
         snapshot.hostnameHTTPS = await hostnameHTTPS
         snapshot.resolverReachability = await resolverReachability
         snapshot.tunnelHandshake = tunnelHandshake
+        snapshot.updatedAt = Date()
+        return snapshot
+    }
+
+    static func runStartup(
+        profile: VPNProfile,
+        vpnStatus: NEVPNStatus,
+        metrics: TunnelMetrics?,
+        previous: HealthProbeSnapshot?,
+        trigger: String
+    ) async -> HealthProbeSnapshot {
+        let startedAt = Date()
+        var snapshot = baseSnapshot(profile: profile, trigger: trigger, startedAt: startedAt, previous: previous)
+
+        guard vpnStatus == .connected else {
+            let skipped = skipped("Unavailable because tunnel is \(vpnStatus.displayName)", at: startedAt)
+            snapshot.publicIP = skipped
+            snapshot.dnsLeak = skipped
+            snapshot.directHTTPS = skipped
+            snapshot.hostnameHTTPS = skipped
+            snapshot.resolverReachability = skipped
+            snapshot.tunnelHandshake = skipped
+            snapshot.updatedAt = startedAt
+            return snapshot
+        }
+
+        let session = makeSession()
+        defer { session.finishTasksAndInvalidate() }
+
+        let (publicIP, observedIP) = await publicIPCheck(session: session)
+        snapshot.publicIP = publicIP
+        snapshot.observedExitIP = observedIP
+        snapshot.expectedExitIPMatched = exitIPMatched(expected: profile.expectedExitIP, observed: observedIP)
+        snapshot.resolverReachability = await resolverReachabilityCheck(profile: profile, metrics: metrics, session: session)
+        snapshot.tunnelHandshake = tunnelHandshakeCheck(profile: profile, metrics: metrics)
+        let skipped = skipped("Skipped during lightweight startup check", at: startedAt)
+        snapshot.dnsLeak = skipped
+        snapshot.directHTTPS = skipped
+        snapshot.hostnameHTTPS = skipped
         snapshot.updatedAt = Date()
         return snapshot
     }

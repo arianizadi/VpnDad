@@ -6,6 +6,7 @@ enum TunnelRuntimeError: LocalizedError {
     case hevIntegrationNotConfigured(String)
     case missingProfile
     case engineHandshakeFailed(String)
+    case packetBridgeExited(Int32)
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +20,8 @@ enum TunnelRuntimeError: LocalizedError {
             return "VPN profile was not provided"
         case .engineHandshakeFailed(let detail):
             return "MasterDnsVPN handshake failed: \(detail)"
+        case .packetBridgeExited(let code):
+            return "Packet bridge exited with code \(code)"
         }
     }
 }

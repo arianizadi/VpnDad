@@ -41,7 +41,8 @@ final class HevSocks5TunnelRunner {
     func start(
         socksAddress: String,
         packetFlow: NEPacketTunnelFlow,
-        log: @escaping (String) -> Void
+        log: @escaping (String) -> Void,
+        onExit: @escaping (Int32) -> Void
     ) throws {
         #if canImport(HevSocks5Tunnel)
         let bridge = try makePacketFlowBridge(log: log)
@@ -58,10 +59,11 @@ final class HevSocks5TunnelRunner {
             let result = configURL.path.withCString { path in
                 hev_socks5_tunnel_main_from_file(path, bridge.hevFileDescriptor)
             }
-            if result != 0 {
-                log("HevSocks5Tunnel exited with code \(result)")
-            }
+            log("HevSocks5Tunnel exited with code \(result)")
+            self.isRunning = false
             self.closeFileDescriptor(&self.hevFileDescriptor)
+            self.closeFileDescriptor(&self.packetFlowFileDescriptor)
+            onExit(Int32(result))
         }
         worker?.name = "HevSocks5Tunnel"
         worker?.start()
@@ -180,8 +182,30 @@ final class HevSocks5TunnelRunner {
         guard result == 0 else {
             throw TunnelRuntimeError.hevIntegrationNotConfigured("socketpair failed: \(currentPOSIXError())")
         }
+        do {
+            try disableSIGPIPE(on: fileDescriptors[0])
+            try disableSIGPIPE(on: fileDescriptors[1])
+        } catch {
+            close(fileDescriptors[0])
+            close(fileDescriptors[1])
+            throw error
+        }
         log("HevSocks5Tunnel packet-flow bridge created with socketpair")
         return (fileDescriptors[0], fileDescriptors[1])
+    }
+
+    private func disableSIGPIPE(on fd: Int32) throws {
+        var enabled: Int32 = 1
+        let result = setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_NOSIGPIPE,
+            &enabled,
+            socklen_t(MemoryLayout<Int32>.size)
+        )
+        guard result == 0 else {
+            throw TunnelRuntimeError.hevIntegrationNotConfigured("SO_NOSIGPIPE failed: \(currentPOSIXError())")
+        }
     }
 
     private func startPacketFlowInputPump(

@@ -332,6 +332,7 @@ struct ProfileDetailView: View {
         }
         .task(id: "\(profile.id.uuidString)-\(vpn.status.rawValue)") {
             guard vpn.status == .connected else {
+                health.resetAutomaticRun()
                 return
             }
             try? await Task.sleep(nanoseconds: 4_000_000_000)

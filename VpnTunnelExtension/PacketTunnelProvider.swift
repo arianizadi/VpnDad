@@ -43,6 +43,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     packetFlow: packetFlow
                 ) { [weak self] line in
                     self?.log(line)
+                } onExit: { [weak self] code in
+                    self?.handlePacketBridgeExit(code)
                 }
                 telemetry.markRunning()
                 writeTelemetrySnapshot(forceLog: true)
@@ -194,6 +196,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         throw TunnelRuntimeError.engineHandshakeFailed(detail)
     }
 
+    private func handlePacketBridgeExit(_ code: Int32) {
+        let snapshot = telemetry.current()
+        guard snapshot.status == "running" else {
+            return
+        }
+        let error = TunnelRuntimeError.packetBridgeExited(code)
+        telemetry.markFailed(error.localizedDescription)
+        log("packet bridge exited while tunnel was running: code=\(code)")
+        writeTelemetrySnapshot(forceLog: true)
+        cancelTunnelWithError(error)
+    }
+
     private func masterDNSStartupFailure(in metrics: TunnelMetrics) -> String? {
         if metrics.status == "failed" {
             return metrics.lastError ?? metrics.engineLastError ?? "engine reported failed status"
@@ -330,6 +344,13 @@ private final class TunnelTelemetry {
         metrics.lastError = error
         metrics.updatedAt = Date()
         lock.unlock()
+    }
+
+    func current() -> TunnelMetrics {
+        lock.lock()
+        let copy = metrics
+        lock.unlock()
+        return copy
     }
 
     func recordLogLine(_ line: String) {
