@@ -119,29 +119,35 @@ can contain endpoints and shared keys.
   "resolvers": [{"type": "udp", "address": "203.0.113.10:53"}],
   "masterdns": {
     "encryptionKey": "replace-with-shared-secret",
-    "encryptionMethod": 5,
+    "encryptionLevel": "maximum",
     "baseEncodeData": false
   }
 }
 ```
 
-`encryptionMethod` must be AES-GCM method `3`, `4`, or `5`. If omitted, the
-bridge defaults to `5`.
+`encryptionLevel` can be `standard` (AES-128-GCM, method `3`), `strong`
+(AES-192-GCM, method `4`), or `maximum` (AES-256-GCM, method `5`). You can
+also use the raw `encryptionMethod` field directly. The app defaults to
+`maximum`; the MasterDnsVPN server must use the matching encryption method.
 
-Optional custom-FEC fields:
+Optional FEC preset:
 
 ```json
 {
-  "fecEnabled": true,
-  "fecDirection": "download",
-  "fecGroupSize": 8,
-  "fecOverheadPercent": 15,
-  "fecSymbolSize": 0,
-  "fecFlushTimeoutMs": 25
+  "fecLevel": "balanced"
 }
 ```
 
-The server must also enable FEC. Otherwise the app continues with normal ARQ.
+`fecLevel` can be `none`, `conservative`, `balanced`, or `aggressive`.
+`conservative` matches the original custom FEC defaults: group size `8`, repair
+overhead `15%`, auto symbol size, and `25ms` flush. `balanced` requests group
+size `12`, overhead `25%`, and `20ms` flush. `aggressive` requests group size
+`16`, overhead `40%`, and `15ms` flush. The server must also enable FEC and can
+clamp these values; otherwise the app continues with normal ARQ.
+
+Advanced profiles can still use the raw FEC fields instead of `fecLevel`:
+`fecEnabled`, `fecDirection`, `fecGroupSize`, `fecOverheadPercent`,
+`fecSymbolSize`, and `fecFlushTimeoutMs`.
 
 ## Security Notes
 

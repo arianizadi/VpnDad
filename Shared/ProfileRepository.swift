@@ -478,9 +478,17 @@ final class ProfileRepository {
                 throw ProfileRepositoryError.invalidProfile("VayDNS public key is required")
             }
         case .masterdns:
+            if let encryptionLevel = profile.masterdns?.encryptionLevel,
+               MasterDNSSettings.encryptionMethod(forLevel: encryptionLevel) == nil {
+                throw ProfileRepositoryError.invalidProfile("Unknown MasterDnsVPN encryption level")
+            }
             let method = profile.masterdns?.encryptionMethod ?? 0
             if method < 3 || method > 5 {
                 throw ProfileRepositoryError.invalidProfile("MasterDnsVPN requires AES-GCM encryption")
+            }
+            if let fecLevel = profile.masterdns?.fecLevel,
+               MasterDNSSettings.fecSettings(forLevel: fecLevel) == nil {
+                throw ProfileRepositoryError.invalidProfile("Unknown MasterDnsVPN FEC level")
             }
             if profile.masterdns?.encryptionKey?.isEmpty ?? true {
                 throw ProfileRepositoryError.invalidProfile("MasterDnsVPN encryption key is required")

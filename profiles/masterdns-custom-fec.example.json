@@ -12,13 +12,8 @@
   ],
   "masterdns": {
     "encryptionKey": "REPLACE_WITH_SHARED_MASTERDNS_KEY",
-    "encryptionMethod": 5,
+    "encryptionLevel": "maximum",
     "baseEncodeData": false,
-    "fecEnabled": true,
-    "fecDirection": "download",
-    "fecGroupSize": 8,
-    "fecOverheadPercent": 15,
-    "fecSymbolSize": 0,
-    "fecFlushTimeoutMs": 25
+    "fecLevel": "balanced"
   }
 }

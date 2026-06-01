@@ -27,8 +27,10 @@ struct VayDNSSettings: Codable, Hashable {
 struct MasterDNSSettings: Codable, Hashable {
     var encryptionKey: String?
     var encryptionKeyRef: String?
+    var encryptionLevel: String?
     var encryptionMethod: Int
     var baseEncodeData: Bool
+    var fecLevel: String?
     var fecEnabled: Bool
     var fecDirection: String
     var fecGroupSize: Int
@@ -39,8 +41,10 @@ struct MasterDNSSettings: Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case encryptionKey
         case encryptionKeyRef
+        case encryptionLevel
         case encryptionMethod
         case baseEncodeData
+        case fecLevel
         case fecEnabled
         case fecDirection
         case fecGroupSize
@@ -52,8 +56,10 @@ struct MasterDNSSettings: Codable, Hashable {
     init(
         encryptionKey: String? = nil,
         encryptionKeyRef: String? = nil,
+        encryptionLevel: String? = nil,
         encryptionMethod: Int = 5,
         baseEncodeData: Bool = false,
+        fecLevel: String? = nil,
         fecEnabled: Bool = false,
         fecDirection: String = "download",
         fecGroupSize: Int = 8,
@@ -63,8 +69,10 @@ struct MasterDNSSettings: Codable, Hashable {
     ) {
         self.encryptionKey = encryptionKey
         self.encryptionKeyRef = encryptionKeyRef
+        self.encryptionLevel = encryptionLevel
         self.encryptionMethod = encryptionMethod
         self.baseEncodeData = baseEncodeData
+        self.fecLevel = fecLevel
         self.fecEnabled = fecEnabled
         self.fecDirection = fecDirection
         self.fecGroupSize = fecGroupSize
@@ -77,14 +85,102 @@ struct MasterDNSSettings: Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         encryptionKey = try container.decodeIfPresent(String.self, forKey: .encryptionKey)
         encryptionKeyRef = try container.decodeIfPresent(String.self, forKey: .encryptionKeyRef)
-        encryptionMethod = try container.decodeIfPresent(Int.self, forKey: .encryptionMethod) ?? 5
+        let decodedEncryptionLevel = try container.decodeIfPresent(String.self, forKey: .encryptionLevel)
+        let decodedEncryptionMethod = try container.decodeIfPresent(Int.self, forKey: .encryptionMethod)
+        if let method = decodedEncryptionMethod,
+           let levelMethod = MasterDNSSettings.encryptionMethod(forLevel: decodedEncryptionLevel),
+           method != levelMethod {
+            throw DecodingError.dataCorruptedError(
+                forKey: .encryptionMethod,
+                in: container,
+                debugDescription: "encryptionMethod conflicts with encryptionLevel"
+            )
+        }
+        encryptionLevel = decodedEncryptionLevel
+        encryptionMethod = decodedEncryptionMethod ?? 5
         baseEncodeData = try container.decodeIfPresent(Bool.self, forKey: .baseEncodeData) ?? false
+        fecLevel = try container.decodeIfPresent(String.self, forKey: .fecLevel)
         fecEnabled = try container.decodeIfPresent(Bool.self, forKey: .fecEnabled) ?? false
         fecDirection = try container.decodeIfPresent(String.self, forKey: .fecDirection) ?? "download"
         fecGroupSize = try container.decodeIfPresent(Int.self, forKey: .fecGroupSize) ?? 8
         fecOverheadPercent = try container.decodeIfPresent(Int.self, forKey: .fecOverheadPercent) ?? 15
         fecSymbolSize = try container.decodeIfPresent(Int.self, forKey: .fecSymbolSize) ?? 0
         fecFlushTimeoutMs = try container.decodeIfPresent(Int.self, forKey: .fecFlushTimeoutMs) ?? 25
+    }
+
+    static func normalizedEncryptionLevel(_ level: String?) -> String? {
+        guard var normalized = level?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !normalized.isEmpty else {
+            return nil
+        }
+        normalized = normalized
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: " ", with: "-")
+        switch normalized {
+        case "standard", "aes-128", "aes-128-gcm", "aes128", "aes128-gcm", "128":
+            return "standard"
+        case "strong", "aes-192", "aes-192-gcm", "aes192", "aes192-gcm", "192":
+            return "strong"
+        case "maximum", "max", "strongest", "aes-256", "aes-256-gcm", "aes256", "aes256-gcm", "256":
+            return "maximum"
+        default:
+            return normalized
+        }
+    }
+
+    static func encryptionMethod(forLevel level: String?) -> Int? {
+        switch normalizedEncryptionLevel(level) {
+        case "standard":
+            return 3
+        case "strong":
+            return 4
+        case "maximum":
+            return 5
+        default:
+            return nil
+        }
+    }
+
+    static func normalizedFECLevel(_ level: String?) -> String? {
+        guard var normalized = level?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !normalized.isEmpty else {
+            return nil
+        }
+        normalized = normalized.replacingOccurrences(of: "_", with: "-")
+        switch normalized {
+        case "off", "disabled", "disable":
+            return "none"
+        case "safe", "low":
+            return "conservative"
+        case "medium":
+            return "balanced"
+        case "high":
+            return "aggressive"
+        default:
+            return normalized
+        }
+    }
+
+    static func fecSettings(forLevel level: String?) -> (
+        level: String,
+        enabled: Bool,
+        groupSize: Int,
+        overheadPercent: Int,
+        symbolSize: Int,
+        flushTimeoutMs: Int
+    )? {
+        switch normalizedFECLevel(level) {
+        case "none":
+            return ("none", false, 8, 15, 0, 25)
+        case "conservative":
+            return ("conservative", true, 8, 15, 0, 25)
+        case "balanced":
+            return ("balanced", true, 12, 25, 0, 20)
+        case "aggressive":
+            return ("aggressive", true, 16, 40, 0, 15)
+        default:
+            return nil
+        }
     }
 }
 
@@ -181,20 +277,38 @@ struct VPNProfile: Codable, Identifiable, Hashable {
         if copy.vaydns?.maxQnameLen == 0 {
             copy.vaydns?.maxQnameLen = 101
         }
-        if copy.masterdns?.encryptionMethod == 0 {
-            copy.masterdns?.encryptionMethod = 5
-        }
-        if copy.masterdns?.fecDirection.isEmpty == true {
-            copy.masterdns?.fecDirection = "download"
-        }
-        if copy.masterdns?.fecGroupSize == 0 {
-            copy.masterdns?.fecGroupSize = 8
-        }
-        if copy.masterdns?.fecOverheadPercent == 0 {
-            copy.masterdns?.fecOverheadPercent = 15
-        }
-        if copy.masterdns?.fecFlushTimeoutMs == 0 {
-            copy.masterdns?.fecFlushTimeoutMs = 25
+        if var settings = copy.masterdns {
+            settings.encryptionLevel = MasterDNSSettings.normalizedEncryptionLevel(settings.encryptionLevel)
+            if let method = MasterDNSSettings.encryptionMethod(forLevel: settings.encryptionLevel) {
+                settings.encryptionMethod = method
+            } else if settings.encryptionMethod == 0 {
+                settings.encryptionMethod = 5
+            }
+
+            settings.fecLevel = MasterDNSSettings.normalizedFECLevel(settings.fecLevel)
+            if let fecPreset = MasterDNSSettings.fecSettings(forLevel: settings.fecLevel) {
+                settings.fecLevel = fecPreset.level
+                settings.fecEnabled = fecPreset.enabled
+                settings.fecDirection = "download"
+                settings.fecGroupSize = fecPreset.groupSize
+                settings.fecOverheadPercent = fecPreset.overheadPercent
+                settings.fecSymbolSize = fecPreset.symbolSize
+                settings.fecFlushTimeoutMs = fecPreset.flushTimeoutMs
+            } else {
+                if settings.fecDirection.isEmpty {
+                    settings.fecDirection = "download"
+                }
+                if settings.fecGroupSize == 0 {
+                    settings.fecGroupSize = 8
+                }
+                if settings.fecOverheadPercent == 0 {
+                    settings.fecOverheadPercent = 15
+                }
+                if settings.fecFlushTimeoutMs == 0 {
+                    settings.fecFlushTimeoutMs = 25
+                }
+            }
+            copy.masterdns = settings
         }
         return copy
     }
