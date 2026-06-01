@@ -1,0 +1,96 @@
+name: Unsigned IPA
+
+on:
+  push:
+    tags:
+      - "stable-*"
+      - "stable/**"
+      - "v*-stable"
+      - "v*-stable.*"
+
+permissions:
+  contents: read
+
+jobs:
+  unsigned-ipa:
+    name: Build unsigned IPA
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout VpnDad
+        uses: actions/checkout@v4
+        with:
+          path: iOS
+
+      - name: Checkout custom MasterDnsVPN
+        uses: actions/checkout@v4
+        with:
+          repository: arianizadi/MasterDnsVPN
+          path: MasterDnsVPN
+
+      - name: Checkout VayDNS dependency
+        uses: actions/checkout@v4
+        with:
+          repository: net2share/vaydns
+          path: vaydns
+
+      - name: Checkout RaptorQ dependency
+        uses: actions/checkout@v4
+        with:
+          repository: xssnick/raptorq
+          path: raptorq
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: MasterDnsVPN/go.mod
+          cache-dependency-path: MasterDnsVPN/go.sum
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          gomobile init
+
+      - name: Build generated frameworks
+        working-directory: iOS
+        run: |
+          scripts/build_engine_bridge.sh
+          scripts/build_hev_socks5_tunnel.sh
+
+      - name: Build unsigned iPhone app
+        working-directory: iOS
+        run: |
+          xcodebuild \
+            -project VpnDadApp.xcodeproj \
+            -scheme VpnDad \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        working-directory: iOS
+        run: |
+          APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/VpnDad.app"
+          TAG_NAME="${GITHUB_REF_NAME//\//-}"
+          IPA_NAME="VpnDad-${TAG_NAME}-unsigned.ipa"
+          test -d "$APP_PATH"
+          rm -rf build/unsigned-ipa
+          mkdir -p build/unsigned-ipa/Payload
+          cp -R "$APP_PATH" build/unsigned-ipa/Payload/
+          (cd build/unsigned-ipa && zip -qry "../$IPA_NAME" Payload)
+          echo "IPA_PATH=iOS/build/$IPA_NAME" >> "$GITHUB_ENV"
+          echo "ARTIFACT_NAME=VpnDad-${TAG_NAME}-unsigned-ipa" >> "$GITHUB_ENV"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+          retention-days: 14

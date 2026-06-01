@@ -89,6 +89,35 @@ Default identifiers in this working copy:
 - App Group: `group.com.arianizadi.vpndad.vpn`
 - Shared Keychain group: `$(AppIdentifierPrefix)com.arianizadi.vpndad`
 
+## Unsigned IPA Artifacts
+
+GitHub Actions builds an unsigned IPA only when a stable tag is pushed. Matching
+tag patterns are:
+
+- `stable-*`, for example `stable-1.0.0`
+- `stable/**`, for example `stable/v1.0.0`
+- `v*-stable`, for example `v1.0.0-stable`
+- `v*-stable.*`, for example `v1.0.0-stable.1`
+
+Create and push a stable tag:
+
+```sh
+git tag stable-1.0.0
+git push origin stable-1.0.0
+```
+
+The workflow checks out this app, the custom `arianizadi/MasterDnsVPN` fork, and
+the sibling `vaydns` and `raptorq` dependencies. It rebuilds the generated
+XCFrameworks, builds `VpnDad.app` for `iphoneos` with code signing disabled,
+packages `Payload/VpnDad.app`, and uploads an artifact named like
+`VpnDad-stable-1.0.0-unsigned.ipa`.
+
+The unsigned IPA is not directly installable on stock iOS. It is meant for
+later re-signing with Sideloadly, AltStore, or another signing flow. Because
+VpnDad includes a packet tunnel extension, the final signer still needs valid
+entitlements for the app, the extension, the App Group, Keychain access group,
+and Network Extension capability.
+
 ## Profiles
 
 Profiles are JSON files imported by the app. The host app stores shared secrets
