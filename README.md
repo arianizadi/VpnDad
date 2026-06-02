@@ -144,6 +144,19 @@ Sideloadly is useful here because GitHub can build the unsigned IPA without
 shipping private certificates, provisioning profiles, or Apple account secrets
 in this repository. Signing stays on the installer's machine.
 
+### Fallback Signing Option: WarpSign
+
+If Sideloadly does not work for your signing setup, another option to try is
+[WarpSign](https://github.com/teflocarbon/warpsign). WarpSign is a command-line
+iOS signing tool that uses the Apple Developer Portal API for certificate,
+provisioning profile, entitlement, and code-signing workflows.
+
+This is a more advanced path than Sideloadly. WarpSign currently requires a
+paid Apple Developer account, an Apple Developer or Distribution certificate,
+Python 3.10 or newer, and macOS for local signing. The same VpnDad entitlement
+requirements still apply: the signed app and packet tunnel extension need valid
+Network Extension, App Group, and Keychain access entitlements.
+
 ## Profiles
 
 Profiles are JSON files imported by the app. The host app stores shared secrets
