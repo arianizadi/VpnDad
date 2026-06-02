@@ -118,6 +118,32 @@ VpnDad includes a packet tunnel extension, the final signer still needs valid
 entitlements for the app, the extension, the App Group, Keychain access group,
 and Network Extension capability.
 
+### Recommended Install Path: Sideloadly
+
+For personal testing, the recommended path is to download the unsigned IPA from
+the latest stable GitHub release and use Sideloadly to sign and install it with
+your own Apple account or developer signing identity.
+
+High-level flow:
+
+1. Download the `VpnDad-*-unsigned.ipa` release asset from GitHub.
+2. Open Sideloadly on macOS or Windows.
+3. Connect the iPhone by USB and trust the computer if iOS prompts for it.
+4. Drag the unsigned IPA into Sideloadly.
+5. Select the connected device and Apple account/signing identity.
+6. Start the install, then trust the installed developer profile on the phone if
+   iOS requires it.
+
+Important: VpnDad contains a Packet Tunnel Network Extension, so the signing
+identity must be allowed to sign the app and extension with the required
+Network Extension, App Group, and Keychain access entitlements. If signing works
+but the VPN cannot start, check entitlements first; a normal app install can
+succeed while the packet tunnel extension is still invalid for iOS.
+
+Sideloadly is useful here because GitHub can build the unsigned IPA without
+shipping private certificates, provisioning profiles, or Apple account secrets
+in this repository. Signing stays on the installer's machine.
+
 ## Profiles
 
 Profiles are JSON files imported by the app. The host app stores shared secrets
