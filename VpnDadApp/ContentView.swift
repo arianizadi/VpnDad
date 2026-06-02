@@ -707,12 +707,14 @@ struct TunnelMetricsView: View {
     }
 
     private var arqTotalRejected: UInt64 {
-        (metrics.arqDataPacketsQueueRejected ?? 0) +
-            (metrics.arqDataResendsRejected ?? 0) +
-            (metrics.arqDataNackPacketsRejected ?? 0) +
-            (metrics.arqDataAckPacketsRejected ?? 0) +
-            (metrics.arqControlPacketsQueueRejected ?? 0) +
-            (metrics.arqControlResendsRejected ?? 0)
+        [
+            metrics.arqDataPacketsQueueRejected,
+            metrics.arqDataResendsRejected,
+            metrics.arqDataNackPacketsRejected,
+            metrics.arqDataAckPacketsRejected,
+            metrics.arqControlPacketsQueueRejected,
+            metrics.arqControlResendsRejected
+        ].compactMap { $0 }.reduce(0, +)
     }
 
     private var arqTotalAcked: UInt64 {
