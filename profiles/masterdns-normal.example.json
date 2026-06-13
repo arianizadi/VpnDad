@@ -12,12 +12,12 @@
     }
   ],
   "masterdns": {
-    "runtimeMode": "hevSocks",
+    "runtimeMode": "nativePacket",
     "clientConfig": {
-      "PROTOCOL_TYPE": "SOCKS5",
+      "PROTOCOL_TYPE": "TCP",
       "DOMAINS": ["dns-tunnel.example.com"],
-      "LOCAL_DNS_ENABLED": false,
-      "IOS_FORCE_HEV_SOCKS": true,
+      "LOCAL_DNS_ENABLED": true,
+      "IOS_FORCE_HEV_SOCKS": false,
       "DATA_ENCRYPTION_METHOD": 5,
       "ENCRYPTION_KEY": "REPLACE_WITH_SHARED_MASTERDNS_KEY",
       "BASE_ENCODE_DATA": false,

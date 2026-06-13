@@ -19,6 +19,10 @@ connect و health check.
 5. در بخش `Health`، روی `Run All Checks` بزنید. اگر چیزی fail شد، روی
    `Export Diagnostics` بزنید و JSON را برای developer بفرستید.
 
+برای profileهای MasterDnsVPN، mode پیشنهادی `nativePacket` با
+`PROTOCOL_TYPE` برابر `TCP` است. فقط وقتی developer مشخصا legacy SOCKS bridge
+path را خواست، از `hevSocks` به عنوان fallback استفاده کنید.
+
 فایل `VpnDad-*-unsigned.ipa` روی iOS معمولی مستقیم قابل نصب نیست. اول باید
 re-sign شود، و Sideloadly همین کار را روی کامپیوتر تست کننده انجام می دهد.
 
@@ -100,9 +104,9 @@ scripts/build_hev_socks5_tunnel.sh
 ```
 
 `EngineBridge.xcframework` از sibling package یعنی
-`../MasterDnsVPN/mobilebridge` ساخته می شود. وقتی mobile bridge diagnostics و
-را می خواهید، از custom fork `arianizadi/MasterDnsVPN` استفاده کنید. FEC
-support جدا، فقط برای custom build، و برای normal testing باید خاموش بماند.
+`../MasterDnsVPN/mobilebridge` ساخته می شود. برای همین package و mobile bridge
+diagnostics از custom fork `arianizadi/MasterDnsVPN` استفاده کنید. FEC support
+جدا، فقط برای custom build، و برای normal testing باید خاموش بماند.
 
 ### ساخت Xcode
 
@@ -168,9 +172,10 @@ profile store ذخیره می کند.
 
 Example files:
 
-- `profiles/masterdns-normal.example.json`: normal MasterDnsVPN server, no FEC.
-- `profiles/masterdns-custom-fec.example.json`: custom forked MasterDnsVPN
-  server with experimental download FEC enabled.
+- `profiles/masterdns-normal.example.json`: recommended native packet TCP
+  MasterDnsVPN server, no FEC.
+- `profiles/masterdns-custom-fec.example.json`: custom forked native packet TCP
+  MasterDnsVPN server with experimental download FEC enabled.
 - `profiles/vaydns.example.json`: VayDNS tunnel profile.
 
 قبل از import، همه placeholder domains، resolver IPs، public keys و encryption
@@ -187,20 +192,40 @@ Real profiles مثل `profiles/masterdns-devbox.json` نادیده گرفته م
   "name": "Example MasterDNS",
   "protocol": "masterdns",
   "domain": "dns-tunnel.example.com",
+  "domains": ["dns-tunnel.example.com"],
   "resolvers": [{"type": "udp", "address": "203.0.113.10:53"}],
   "masterdns": {
-    "encryptionKey": "replace-with-shared-secret",
-    "encryptionLevel": "maximum",
-    "baseEncodeData": false
+    "runtimeMode": "nativePacket",
+    "clientConfig": {
+      "PROTOCOL_TYPE": "TCP",
+      "DOMAINS": ["dns-tunnel.example.com"],
+      "LOCAL_DNS_ENABLED": true,
+      "DATA_ENCRYPTION_METHOD": 5,
+      "ENCRYPTION_KEY": "replace-with-shared-secret",
+      "BASE_ENCODE_DATA": false
+    }
   }
 }
 ```
 
-`encryptionLevel` می تواند `standard` (AES-128-GCM، method `3`)، `strong`
-(AES-192-GCM، method `4`) یا `maximum` (AES-256-GCM، method `5`) باشد. همچنین
-می توانید raw field یعنی `encryptionMethod` را مستقیم استفاده کنید. برنامه به
-صورت پیش فرض از `maximum` استفاده می کند؛ MasterDnsVPN server باید matching
-encryption method را استفاده کند.
+`masterdns.clientConfig` همان uppercase keys مربوط به desktop client JSON/TOML
+config در MasterDnsVPN را استفاده می کند. Legacy fields مثل `encryptionKey`،
+`encryptionMethod`، `encryptionLevel`، `baseEncodeData` و FEC shortcuts همچنان
+import می شوند؛ canonical keys جاافتاده از همین aliases پر می شوند.
+
+`runtimeMode` مسیر iOS transport را کنترل می کند:
+
+- `nativePacket`: برای normal MasterDnsVPN testing توصیه می شود. به
+  `PROTOCOL_TYPE` `TCP` و `LOCAL_DNS_ENABLED` `true` نیاز دارد. Tunnel
+  extension، IP packets را از `NEPacketTunnelFlow` به Go gVisor netstack
+  adapter می دهد. TCP flows و DNS UDP/53 از MasterDnsVPN stream و DNS-cache
+  paths استفاده می کنند؛ generic non-DNS UDP منتقل نمی شود.
+- `hevSocks`: legacy fallback. به `PROTOCOL_TYPE` `SOCKS5` و
+  `LOCAL_DNS_ENABLED` `false` نیاز دارد.
+
+`DATA_ENCRYPTION_METHOD` از desktop bounds یعنی `0` تا `5` پیروی می کند. Editor
+برای legacy methods کمتر از `3` warning می دهد؛ AES-GCM methods `3`، `4` و
+`5` همچنان recommended choices برای iOS testing هستند.
 
 Resolverهای MasterDnsVPN باید `"type": "udp"` و یک IPv4 یا IPv6 address با port
 اختیاری داشته باشند. چند UDP IP resolver در imported JSON و editor پشتیبانی
@@ -228,33 +253,36 @@ Optional health-check expectations را می توان با `expectedExitIP` و
 
 ### MasterDnsVPN Support Matrix
 
-در حال حاضر VpnDad یک mobile subset از MasterDnsVPN را با این مسیر پشتیبانی
-می کند: iOS Packet Tunnel -> HevSocks5Tunnel -> local SOCKS5 ->
-MasterDnsVPN `mobilebridge`.
+در حال حاضر VpnDad دو MasterDnsVPN runtime mode دارد:
+
+- پیشنهادی: `nativePacket` با `PROTOCOL_TYPE` `TCP`.
+- `hevSocks`: iOS Packet Tunnel -> HevSocks5Tunnel -> local SOCKS5 ->
+  MasterDnsVPN `mobilebridge`.
+- `nativePacket`: iOS Packet Tunnel -> Go gVisor packet adapter ->
+  MasterDnsVPN runtime بدون local listener sockets.
 
 مواردی که فعلا پشتیبانی می شوند:
 
 - Profileهای `protocol: "masterdns"`.
-- SOCKS5 server mode از طریق mobile bridge.
-- AES-GCM encryption methods `3`، `4` و `5` از طریق `encryptionMethod` یا
-  `encryptionLevel`.
-- `baseEncodeData`.
-- چند UDP IP resolver در imported JSON و editor.
-- Custom-fork FEC fields، فقط experimental.
+- Full desktop client config storage زیر `masterdns.clientConfig`.
+- Legacy MasterDnsVPN aliases به canonical `clientConfig` keys import می شوند.
+- SOCKS5 server mode از طریق mobile bridge در `hevSocks` runtime mode.
+- Native packet mode برای MasterDnsVPN TCP flows و DNS UDP/53.
+- Desktop encryption method bounds از `0` تا `5`، همراه با iOS warnings برای
+  legacy non-AES-GCM methods.
+- `BASE_ENCODE_DATA`، compression، MTU، resolver strategy، duplication،
+  worker/timer، ARQ، FEC و logging fields در editor.
+- Multiple domains و UDP IP/CIDR resolvers در imported JSON و editor.
+- Keychain-only MasterDnsVPN secret persistence و secret-free profile export.
+- Custom-fork FEC fields، experimental و به صورت پیش فرض collapsed در editor.
 - Engine diagnostics و metrics در iOS UI.
 
 مواردی که فعلا پشتیبانی نمی شوند:
 
-- MasterDnsVPN TCP mode.
-- MasterDnsVPN local DNS listener/cache.
 - Non-UDP MasterDnsVPN resolvers.
 - Hostname، DoH یا DoT resolverهای MasterDnsVPN.
+- Generic non-DNS UDP through native packet mode.
 - Server config generation.
-- همه desktop knobs برای compression، MTU، resolver strategy، packet
-  duplication، worker/timer tuning یا ARQ tuning.
-
-Full MasterDnsVPN desktop/client parity به یک packet/stream architecture rewrite
-جدا نیاز دارد و خارج از current Hev SOCKS bridge است.
 
 Custom build یعنی `arianizadi/MasterDnsVPN` package `mobilebridge` لازم برای
 build این app و engine status/diagnostics قابل export در iOS UI را اضافه می کند.

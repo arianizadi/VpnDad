@@ -17,6 +17,10 @@ Use these steps if you are testing the app and already have a profile JSON.
 5. In the `Health` section, tap `Run All Checks`. If something fails, tap
    `Export Diagnostics` and send the JSON to the developer.
 
+For MasterDnsVPN profiles, the recommended runtime is `nativePacket` with
+`PROTOCOL_TYPE` set to `TCP`. Use `hevSocks` only as a fallback when the
+developer specifically asks for the legacy SOCKS bridge path.
+
 The `VpnDad-*-unsigned.ipa` file is not directly installable on stock iOS. It
 must be re-signed first, which is what Sideloadly does on the tester's machine.
 
@@ -95,8 +99,9 @@ scripts/build_hev_socks5_tunnel.sh
 
 `EngineBridge.xcframework` is built from the sibling
 `../MasterDnsVPN/mobilebridge` package. Use the custom
-`arianizadi/MasterDnsVPN` fork when you want the mobile bridge diagnostics. FEC
-support is separate, custom-only, and should stay off for normal testing.
+`arianizadi/MasterDnsVPN` fork for that package and for mobile bridge
+diagnostics. FEC support is separate, custom-only, and should stay off for
+normal testing.
 
 ### Xcode Build
 
@@ -162,9 +167,10 @@ store.
 
 Example files:
 
-- `profiles/masterdns-normal.example.json`: normal MasterDnsVPN server, no FEC.
-- `profiles/masterdns-custom-fec.example.json`: custom forked MasterDnsVPN
-  server with experimental download FEC enabled.
+- `profiles/masterdns-normal.example.json`: recommended native packet TCP
+  MasterDnsVPN server, no FEC.
+- `profiles/masterdns-custom-fec.example.json`: custom forked native packet TCP
+  MasterDnsVPN server with experimental download FEC enabled.
 - `profiles/vaydns.example.json`: VayDNS tunnel profile.
 
 Replace all placeholder domains, resolver IPs, public keys, and encryption keys
@@ -184,11 +190,11 @@ can contain endpoints and shared keys.
   "domains": ["dns-tunnel.example.com"],
   "resolvers": [{"type": "udp", "address": "203.0.113.10:53"}],
   "masterdns": {
-    "runtimeMode": "hevSocks",
+    "runtimeMode": "nativePacket",
     "clientConfig": {
-      "PROTOCOL_TYPE": "SOCKS5",
+      "PROTOCOL_TYPE": "TCP",
       "DOMAINS": ["dns-tunnel.example.com"],
-      "LOCAL_DNS_ENABLED": false,
+      "LOCAL_DNS_ENABLED": true,
       "DATA_ENCRYPTION_METHOD": 5,
       "ENCRYPTION_KEY": "replace-with-shared-secret",
       "BASE_ENCODE_DATA": false
@@ -204,12 +210,13 @@ still import; missing canonical keys are filled from those aliases.
 
 `runtimeMode` controls the iOS transport:
 
-- `hevSocks`: stable default. Requires `PROTOCOL_TYPE` `SOCKS5` and
+- `nativePacket`: recommended for normal MasterDnsVPN testing. Requires
+  `PROTOCOL_TYPE` `TCP` and `LOCAL_DNS_ENABLED` `true`. The tunnel extension
+  feeds `NEPacketTunnelFlow` IP packets into the Go gVisor netstack adapter.
+  TCP flows and DNS UDP/53 use the MasterDnsVPN stream and DNS-cache paths;
+  generic non-DNS UDP is not carried.
+- `hevSocks`: legacy fallback. Requires `PROTOCOL_TYPE` `SOCKS5` and
   `LOCAL_DNS_ENABLED` `false`.
-- `nativePacket`: experimental packet runtime for TCP mode and local DNS.
-  The tunnel extension feeds `NEPacketTunnelFlow` IP packets into the Go gVisor
-  netstack adapter. TCP flows and DNS UDP/53 use the MasterDnsVPN stream and
-  DNS-cache paths; generic non-DNS UDP is not carried.
 
 `domains` and `clientConfig.DOMAINS` can contain multiple tunnel domains.
 `domain` remains the first display domain for older profile compatibility.
@@ -252,6 +259,7 @@ Optional health-check expectations can be added to either profile type with
 
 VpnDad currently has two MasterDnsVPN runtime modes:
 
+- Recommended: `nativePacket` with `PROTOCOL_TYPE` `TCP`.
 - `hevSocks`: iOS Packet Tunnel -> HevSocks5Tunnel -> local SOCKS5 ->
   MasterDnsVPN `mobilebridge`.
 - `nativePacket`: iOS Packet Tunnel -> Go gVisor packet adapter ->
