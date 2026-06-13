@@ -99,9 +99,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
               --title "$GITHUB_REF_NAME" \
               --notes "Unsigned VpnDad IPA artifact for re-signing. This IPA is not directly installable on stock iOS until it is re-signed with valid app and packet-tunnel extension entitlements."
           fi
-          gh release upload "$GITHUB_REF_NAME" "$IPA_PATH" --clobber
+          gh release upload "$GITHUB_REF_NAME" "$IPA_PATH" --clobber --repo "$GITHUB_REPOSITORY"
