@@ -40,9 +40,13 @@ final class VPNController: ObservableObject {
     func connect(profile: VPNProfile) async throws {
         let repository = ProfileRepository()
         try? repository.appendTunnelLog("app connect requested for \(profile.name)")
-        let profileJSON = try repository.profileJSONForTunnel(id: profile.id)
+        let startSelection = try repository.resolvedProfile(id: profile.id).preparedForIOSTunnelStart()
+        let profileJSON = try repository.profileJSONString(startSelection.profile, includeSecrets: true)
         try repository.writeSelectedProfileID(profile.id)
         try? repository.appendTunnelLog("app selected profile \(profile.id.uuidString)")
+        try? repository.appendTunnelLog(
+            "app selected runtime \(startSelection.runtimeMode.rawValue) source=\(startSelection.runtimeModeSource)"
+        )
 
         let activeManager = try await loadOrCreateManager()
         let tunnelProtocol = NETunnelProviderProtocol()
@@ -130,6 +134,93 @@ final class VPNController: ObservableObject {
         }
         lastLoggedStatusRawValue = newStatus.rawValue
         try? ProfileRepository().appendTunnelLog("app VPN status changed to \(newStatus.displayName) via \(source)")
+        if newStatus == .disconnecting || newStatus == .disconnected {
+            appendDisconnectMetricsSnapshot(newStatus)
+        }
+    }
+
+    private func appendDisconnectMetricsSnapshot(_ status: NEVPNStatus) {
+        let repository = ProfileRepository()
+        guard let metrics = try? repository.readTunnelMetrics() else {
+            return
+        }
+        let metricsAge = max(0, Date().timeIntervalSince(metrics.updatedAt))
+        // Metrics older than this belong to a previous tunnel session; logging
+        // them as if they describe the current disconnect produces misleading
+        // failure entries in the health timeline.
+        guard metricsAge <= 120 else {
+            try? repository.appendTunnelLog(
+                "app observed \(status.displayName); last extension metrics are " +
+                "\(formatSeconds(metricsAge)) old (previous session), not attributing them to this disconnect"
+            )
+            return
+        }
+        let bridgeErrors = metrics.bridgeReadErrors + metrics.bridgeWriteErrors + metrics.bridgeShortWrites
+        let engineState = metrics.engineRunning.map { $0 ? "running" : "not running" } ?? "unknown"
+        let heartbeatAge = metrics.providerHeartbeatAt.map { max(0, Date().timeIntervalSince($0)) }
+        let providerState: String
+        if let reason = metrics.providerStopReasonName {
+            providerState = "stop=\(reason)/\(metrics.providerStopReasonRaw.map(String.init) ?? "n/a")"
+        } else if metrics.status == "running", metrics.engineRunning == true, metricsAge >= 3 {
+            // The provider was running and never executed stopTunnel: the
+            // process was killed externally, most commonly by the jetsam
+            // memory limit (~50 MB footprint for tunnel extensions).
+            providerState = "stale-running-no-stop-reason (extension killed by iOS, likely memory limit)"
+        } else {
+            providerState = metrics.providerLastLifecycleEvent ?? "unknown"
+        }
+        let hevState: String
+        if let exitCode = metrics.hevExitCode {
+            hevState = "exit=\(exitCode)"
+        } else {
+            hevState = metrics.hevRunning == true ? "running" : "not-running"
+        }
+        let resourceState = [
+            metrics.memoryResidentBytes.map { "rss=\($0)B" },
+            metrics.memoryPhysicalFootprintBytes.map { "footprint=\($0)B" },
+            metrics.threadCount.map { "threads=\($0)" },
+            metrics.openFileDescriptorCount.map { "fds=\($0)" }
+        ].compactMap { $0 }.joined(separator: " ")
+        let nativeState = [
+            metrics.nativeTCPFlowsActive.map { "tcpActive=\($0)" },
+            metrics.nativeTCPFlowsCreated.map { "tcpCreated=\($0)" },
+            metrics.nativeTCPFlowsClosed.map { "tcpClosed=\($0)" },
+            metrics.nativeUnsupportedUDP.map { "unsupportedUDP=\($0)" },
+            metrics.nativeUnsupportedUDPRejects.map { "udpRejects=\($0)" },
+            metrics.nativePacketWriteErrors.map { "engineWriteErrors=\($0)" },
+            metrics.nativePacketFlowWriteFailures.map { "flowWriteFailures=\($0)" },
+            metrics.nativePacketFlowInvalidOutputPackets.map { "invalidOutput=\($0)" }
+        ].compactMap { $0 }.joined(separator: " ")
+        try? repository.appendTunnelLog(
+            "app observed \(status.displayName) with last metrics " +
+            "status=\(metrics.status) phase=\(metrics.phase) engine=\(engineState) " +
+            "runtime=\(metrics.runtimeMode ?? "unknown") source=\(metrics.runtimeModeSource ?? "unknown") " +
+            "age=\(formatSeconds(metricsAge)) heartbeat=\(heartbeatAge.map(formatSeconds) ?? "n/a") " +
+            "provider=\(providerState) hev=\(hevState) " +
+            "uptime=\(metrics.uptimeSeconds)s total=\(metrics.totalBytes)B " +
+            "packets=\(metrics.uploadPackets)up/\(metrics.downloadPackets)down " +
+            "bridgeErrors=\(bridgeErrors) configured-send=\(metrics.sendsPerPacket ?? 1)x " +
+            "arqQueueRejects=\(arqQueueRejects(metrics)) arqAckSuppressions=\(metrics.arqDataAckPacketsRejected ?? 0) " +
+            "native=\(nativeState.isEmpty ? "n/a" : nativeState) " +
+            "resources=\(resourceState.isEmpty ? "n/a" : resourceState)"
+        )
+    }
+
+    private func arqQueueRejects(_ metrics: TunnelMetrics) -> UInt64 {
+        [
+            metrics.arqDataPacketsQueueRejected,
+            metrics.arqDataResendsRejected,
+            metrics.arqDataNackPacketsRejected,
+            metrics.arqControlPacketsQueueRejected,
+            metrics.arqControlResendsRejected
+        ].compactMap { $0 }.reduce(0, +)
+    }
+
+    private func formatSeconds(_ seconds: TimeInterval) -> String {
+        if seconds < 10 {
+            return String(format: "%.1fs", seconds)
+        }
+        return "\(Int(seconds.rounded()))s"
     }
 }
 
@@ -137,19 +228,19 @@ extension NEVPNStatus {
     var displayName: String {
         switch self {
         case .invalid:
-            return "Invalid"
+            return L10n.string("Invalid")
         case .disconnected:
-            return "Disconnected"
+            return L10n.string("Disconnected")
         case .connecting:
-            return "Connecting"
+            return L10n.string("Connecting")
         case .connected:
-            return "Connected"
+            return L10n.string("Connected")
         case .reasserting:
-            return "Reconnecting"
+            return L10n.string("Reconnecting")
         case .disconnecting:
-            return "Disconnecting"
+            return L10n.string("Disconnecting")
         @unknown default:
-            return "Unknown"
+            return L10n.string("Unknown")
         }
     }
 }

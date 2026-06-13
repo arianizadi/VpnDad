@@ -7,6 +7,9 @@ import HevSocks5Tunnel
 #endif
 
 struct HevRunnerSnapshot {
+    var isRunning: Bool
+    var exitCode: Int32?
+    var exitedAt: Date?
     var tunnelUploadPackets: UInt64
     var tunnelUploadBytes: UInt64
     var tunnelDownloadPackets: UInt64
@@ -22,6 +25,14 @@ struct HevRunnerSnapshot {
 }
 
 final class HevSocks5TunnelRunner {
+    private let bridgeSocketBufferSize: Int32 = 256 * 1024
+    private let bridgeBackpressureRetryDelaysUS: [useconds_t] = [1_000, 2_000, 4_000, 8_000, 16_000]
+    private let bridgeBackpressureLogInterval: TimeInterval = 2
+    private let hevTaskStackBaseSize = 20 * 1024
+    private let hevTCPBufferSize = 4 * 1024
+    private let hevUDPReceiveBufferSize = 64 * 1024
+    private let hevUDPCopyBufferCount = 2
+    private let hevMaxSessionCount = 96
     private(set) var isRunning = false
     private var worker: Thread?
     private var packetOutputWorker: Thread?
@@ -37,6 +48,9 @@ final class HevSocks5TunnelRunner {
     private var bridgeWriteErrors: UInt64 = 0
     private var bridgeShortWrites: UInt64 = 0
     private var lastBridgeError: String?
+    private var lastBridgeBackpressureLogAt: Date?
+    private var lastExitCode: Int32?
+    private var lastExitedAt: Date?
 
     func start(
         socksAddress: String,
@@ -45,6 +59,7 @@ final class HevSocks5TunnelRunner {
         onExit: @escaping (Int32) -> Void
     ) throws {
         #if canImport(HevSocks5Tunnel)
+        resetCounters()
         let bridge = try makePacketFlowBridge(log: log)
         hevFileDescriptor = bridge.hevFileDescriptor
         packetFlowFileDescriptor = bridge.packetFlowFileDescriptor
@@ -59,6 +74,7 @@ final class HevSocks5TunnelRunner {
             let result = configURL.path.withCString { path in
                 hev_socks5_tunnel_main_from_file(path, bridge.hevFileDescriptor)
             }
+            self.recordExit(code: Int32(result))
             log("HevSocks5Tunnel exited with code \(result)")
             self.isRunning = false
             self.closeFileDescriptor(&self.hevFileDescriptor)
@@ -67,7 +83,12 @@ final class HevSocks5TunnelRunner {
         }
         worker?.name = "HevSocks5Tunnel"
         worker?.start()
-        log("HevSocks5Tunnel started with SOCKS \(socksAddress)")
+        log(
+            "HevSocks5Tunnel started with SOCKS \(socksAddress) " +
+            "tcp-buffer=\(hevTCPBufferSize) task-stack=\(hevTaskStackSize) " +
+            "udp-rx-buffer=\(hevUDPReceiveBufferSize) udp-copy-buffers=\(hevUDPCopyBufferCount) " +
+            "max-sessions=\(hevMaxSessionCount) bridge-buffer=\(bridgeSocketBufferSize)"
+        )
         #else
         throw TunnelRuntimeError.missingHevSocks5Tunnel
         #endif
@@ -96,6 +117,9 @@ final class HevSocks5TunnelRunner {
         let writeErrors = bridgeWriteErrors
         let shortWrites = bridgeShortWrites
         let bridgeError = lastBridgeError
+        let exitCode = lastExitCode
+        let exitedAt = lastExitedAt
+        let running = isRunning
         countersLock.unlock()
 
         #if canImport(HevSocks5Tunnel)
@@ -110,6 +134,9 @@ final class HevSocks5TunnelRunner {
             &tunnelDownloadBytes
         )
         return HevRunnerSnapshot(
+            isRunning: running,
+            exitCode: exitCode,
+            exitedAt: exitedAt,
             tunnelUploadPackets: UInt64(max(tunnelUploadPackets, 0)),
             tunnelUploadBytes: UInt64(max(tunnelUploadBytes, 0)),
             tunnelDownloadPackets: UInt64(max(tunnelDownloadPackets, 0)),
@@ -125,6 +152,9 @@ final class HevSocks5TunnelRunner {
         )
         #else
         return HevRunnerSnapshot(
+            isRunning: running,
+            exitCode: exitCode,
+            exitedAt: exitedAt,
             tunnelUploadPackets: 0,
             tunnelUploadBytes: 0,
             tunnelDownloadPackets: 0,
@@ -161,9 +191,11 @@ final class HevSocks5TunnelRunner {
           netmask: 255.192.0.0
           cache-size: 10000
         misc:
-          task-stack-size: 24576
-          tcp-buffer-size: 4096
-          max-session-count: 1200
+          task-stack-size: \(hevTaskStackSize)
+          tcp-buffer-size: \(hevTCPBufferSize)
+          udp-recv-buffer-size: \(hevUDPReceiveBufferSize)
+          udp-copy-buffer-nums: \(hevUDPCopyBufferCount)
+          max-session-count: \(hevMaxSessionCount)
           log-level: warn
         """
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("VpnDadTunnel", isDirectory: true)
@@ -185,6 +217,8 @@ final class HevSocks5TunnelRunner {
         do {
             try disableSIGPIPE(on: fileDescriptors[0])
             try disableSIGPIPE(on: fileDescriptors[1])
+            configureSocketBuffers(on: fileDescriptors[0], log: log)
+            configureSocketBuffers(on: fileDescriptors[1], log: log)
         } catch {
             close(fileDescriptors[0])
             close(fileDescriptors[1])
@@ -205,6 +239,30 @@ final class HevSocks5TunnelRunner {
         )
         guard result == 0 else {
             throw TunnelRuntimeError.hevIntegrationNotConfigured("SO_NOSIGPIPE failed: \(currentPOSIXError())")
+        }
+    }
+
+    private func configureSocketBuffers(on fd: Int32, log: (String) -> Void) {
+        var sendBufferSize = bridgeSocketBufferSize
+        if setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_SNDBUF,
+            &sendBufferSize,
+            socklen_t(MemoryLayout<Int32>.size)
+        ) != 0 {
+            log("HevSocks5Tunnel packet-flow bridge send buffer tuning skipped: \(currentPOSIXError())")
+        }
+
+        var receiveBufferSize = bridgeSocketBufferSize
+        if setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_RCVBUF,
+            &receiveBufferSize,
+            socklen_t(MemoryLayout<Int32>.size)
+        ) != 0 {
+            log("HevSocks5Tunnel packet-flow bridge receive buffer tuning skipped: \(currentPOSIXError())")
         }
     }
 
@@ -265,8 +323,15 @@ final class HevSocks5TunnelRunner {
                 let packetBytes = buffer[MemoryLayout<UInt32>.size..<count]
                 let packet = Data(packetBytes)
                 let packetProtocol = NSNumber(value: self.packetProtocol(for: packet))
-                packetFlow.writePackets([packet], withProtocols: [packetProtocol])
-                self.recordBridgeOutput(byteCount: UInt64(packet.count))
+                let accepted = packetFlow.writePackets([packet], withProtocols: [packetProtocol])
+                if accepted {
+                    self.recordBridgeOutput(byteCount: UInt64(packet.count))
+                } else if self.isRunning {
+                    let error = "NEPacketTunnelFlow rejected packet write"
+                    self.recordBridgeWriteError(error)
+                    log("HevSocks5Tunnel packet-flow output write failed: \(error)")
+                    usleep(1_000)
+                }
             }
         }
         packetOutputWorker?.name = "HevSocks5TunnelPacketFlowOutput"
@@ -278,8 +343,52 @@ final class HevSocks5TunnelRunner {
             return
         }
 
+        let expectedBytes = packet.count + MemoryLayout<UInt32>.size
+        let result = writePacketFrame(packet, fd: fd)
+        if result.bytesWritten == expectedBytes {
+            recordBridgeInput(byteCount: UInt64(packet.count))
+            return
+        }
+
+        if result.bytesWritten < 0, isRunning, isTransientBridgeWriteError(result.errorNumber) {
+            for delay in bridgeBackpressureRetryDelaysUS {
+                usleep(delay)
+                let retryResult = writePacketFrame(packet, fd: fd)
+                if retryResult.bytesWritten == expectedBytes {
+                    recordBridgeInput(byteCount: UInt64(packet.count))
+                    return
+                }
+                if retryResult.bytesWritten >= 0 || !isTransientBridgeWriteError(retryResult.errorNumber) {
+                    handleBridgeWriteResult(
+                        retryResult,
+                        expectedBytes: expectedBytes,
+                        packetCount: packet.count,
+                        log: log
+                    )
+                    return
+                }
+            }
+
+            let error = posixErrorDescription(result.errorNumber)
+            recordBridgeWriteError(error)
+            throttledBridgeBackpressureLog(
+                "HevSocks5Tunnel packet-flow bridge backpressure: dropped packet after \(bridgeBackpressureRetryDelaysUS.count) retries: \(error)",
+                log: log
+            )
+            return
+        }
+
+        handleBridgeWriteResult(
+            result,
+            expectedBytes: expectedBytes,
+            packetCount: packet.count,
+            log: log
+        )
+    }
+
+    private func writePacketFrame(_ packet: Data, fd: Int32) -> (bytesWritten: Int, errorNumber: Int32) {
         var header = UInt32(bitPattern: packetProtocol(for: packet)).bigEndian
-        let writeResult = packet.withUnsafeBytes { packetBuffer in
+        let bytesWritten = packet.withUnsafeBytes { packetBuffer in
             withUnsafeMutablePointer(to: &header) { headerPointer in
                 var vectors = [
                     iovec(iov_base: headerPointer, iov_len: MemoryLayout<UInt32>.size),
@@ -288,19 +397,72 @@ final class HevSocks5TunnelRunner {
                 return Darwin.writev(fd, &vectors, Int32(vectors.count))
             }
         }
+        return (bytesWritten, errno)
+    }
 
-        let expectedBytes = packet.count + MemoryLayout<UInt32>.size
-        if writeResult == expectedBytes {
-            recordBridgeInput(byteCount: UInt64(packet.count))
-        } else if writeResult < 0, isRunning {
-            let error = currentPOSIXError()
+    private func handleBridgeWriteResult(
+        _ result: (bytesWritten: Int, errorNumber: Int32),
+        expectedBytes: Int,
+        packetCount: Int,
+        log: (String) -> Void
+    ) {
+        if result.bytesWritten == expectedBytes {
+            recordBridgeInput(byteCount: UInt64(packetCount))
+        } else if result.bytesWritten < 0, isRunning {
+            let error = posixErrorDescription(result.errorNumber)
             recordBridgeWriteError(error)
             log("HevSocks5Tunnel packet-flow bridge write failed: \(error)")
         } else if isRunning {
-            let error = "short write \(writeResult)/\(expectedBytes)"
+            let error = "short write \(result.bytesWritten)/\(expectedBytes)"
             recordBridgeShortWrite(error)
             log("HevSocks5Tunnel packet-flow bridge short write: \(error)")
         }
+    }
+
+    private func isTransientBridgeWriteError(_ errorNumber: Int32) -> Bool {
+        errorNumber == ENOBUFS || errorNumber == EAGAIN || errorNumber == EWOULDBLOCK || errorNumber == ENOMEM
+    }
+
+    private func throttledBridgeBackpressureLog(_ line: String, log: (String) -> Void) {
+        countersLock.lock()
+        let now = Date()
+        let shouldLog = lastBridgeBackpressureLogAt.map { now.timeIntervalSince($0) >= bridgeBackpressureLogInterval } ?? true
+        if shouldLog {
+            lastBridgeBackpressureLogAt = now
+        }
+        countersLock.unlock()
+
+        if shouldLog {
+            log(line)
+        }
+    }
+
+    private var hevTaskStackSize: Int {
+        let udpCopyBufferSize = 1500 * hevUDPCopyBufferCount
+        return hevTaskStackBaseSize + max(hevTCPBufferSize, udpCopyBufferSize)
+    }
+
+    private func resetCounters() {
+        countersLock.lock()
+        bridgeInputPackets = 0
+        bridgeInputBytes = 0
+        bridgeOutputPackets = 0
+        bridgeOutputBytes = 0
+        bridgeReadErrors = 0
+        bridgeWriteErrors = 0
+        bridgeShortWrites = 0
+        lastBridgeError = nil
+        lastBridgeBackpressureLogAt = nil
+        lastExitCode = nil
+        lastExitedAt = nil
+        countersLock.unlock()
+    }
+
+    private func recordExit(code: Int32) {
+        countersLock.lock()
+        lastExitCode = code
+        lastExitedAt = Date()
+        countersLock.unlock()
     }
 
     private func recordBridgeInput(byteCount: UInt64) {
@@ -345,16 +507,12 @@ final class HevSocks5TunnelRunner {
         return (firstByte >> 4) == 6 ? AF_INET6 : AF_INET
     }
 
-    private func closeFileDescriptor(_ fd: inout Int32) {
-        guard fd >= 0 else {
-            return
-        }
-        close(fd)
-        fd = -1
-    }
-
     private func currentPOSIXError() -> String {
         String(cString: strerror(errno))
+    }
+
+    private func posixErrorDescription(_ errorNumber: Int32) -> String {
+        String(cString: strerror(errorNumber))
     }
 
     private func parseHostPort(_ address: String) -> (String, Int) {
@@ -365,4 +523,12 @@ final class HevSocks5TunnelRunner {
         return ("127.0.0.1", 18080)
     }
     #endif
+
+    private func closeFileDescriptor(_ fd: inout Int32) {
+        guard fd >= 0 else {
+            return
+        }
+        close(fd)
+        fd = -1
+    }
 }

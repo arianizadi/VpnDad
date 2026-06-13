@@ -8,9 +8,9 @@ enum KeychainError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unexpectedStatus(let status):
-            return "Keychain operation failed with status \(status)"
+            return L10n.string("Keychain operation failed with status %d", status)
         case .invalidData:
-            return "Keychain value is not valid UTF-8"
+            return L10n.string("Keychain value is not valid UTF-8")
         }
     }
 }

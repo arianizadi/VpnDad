@@ -7,6 +7,146 @@ enum TunnelProtocol: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum MasterDNSRuntimeMode: String, Codable, CaseIterable, Identifiable {
+    case hevSocks
+    case nativePacket
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .hevSocks:
+            return "Hev SOCKS"
+        case .nativePacket:
+            return "Native Packet"
+        }
+    }
+}
+
+enum ProfileJSONValue: Codable, Hashable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case array([ProfileJSONValue])
+    case object([String: ProfileJSONValue])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([ProfileJSONValue].self) {
+            self = .array(value)
+        } else if let value = try? container.decode([String: ProfileJSONValue].self) {
+            self = .object(value)
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported JSON value"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .int(let value):
+            try container.encode(value)
+        case .double(let value):
+            try container.encode(value)
+        case .bool(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+
+    var stringValue: String? {
+        switch self {
+        case .string(let value):
+            return value
+        case .int(let value):
+            return "\(value)"
+        case .double(let value):
+            return "\(value)"
+        case .bool(let value):
+            return value ? "true" : "false"
+        default:
+            return nil
+        }
+    }
+
+    var intValue: Int? {
+        switch self {
+        case .int(let value):
+            return value
+        case .double(let value) where value.rounded() == value:
+            return Int(value)
+        case .string(let value):
+            return Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    var doubleValue: Double? {
+        switch self {
+        case .double(let value):
+            return value
+        case .int(let value):
+            return Double(value)
+        case .string(let value):
+            return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    var boolValue: Bool? {
+        switch self {
+        case .bool(let value):
+            return value
+        case .string(let value):
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "1", "yes", "on":
+                return true
+            case "false", "0", "no", "off":
+                return false
+            default:
+                return nil
+            }
+        default:
+            return nil
+        }
+    }
+
+    var stringArrayValue: [String]? {
+        switch self {
+        case .array(let values):
+            return values.compactMap(\.stringValue)
+        case .string(let value):
+            return [value]
+        default:
+            return nil
+        }
+    }
+}
+
 struct ResolverEndpoint: Codable, Hashable {
     var type: String
     var address: String
@@ -25,6 +165,8 @@ struct VayDNSSettings: Codable, Hashable {
 }
 
 struct MasterDNSSettings: Codable, Hashable {
+    var runtimeMode: MasterDNSRuntimeMode
+    var clientConfig: [String: ProfileJSONValue]
     var encryptionKey: String?
     var encryptionKeyRef: String?
     var encryptionLevel: String?
@@ -39,6 +181,8 @@ struct MasterDNSSettings: Codable, Hashable {
     var fecFlushTimeoutMs: Int
 
     enum CodingKeys: String, CodingKey {
+        case runtimeMode
+        case clientConfig
         case encryptionKey
         case encryptionKeyRef
         case encryptionLevel
@@ -54,6 +198,8 @@ struct MasterDNSSettings: Codable, Hashable {
     }
 
     init(
+        runtimeMode: MasterDNSRuntimeMode = .hevSocks,
+        clientConfig: [String: ProfileJSONValue] = [:],
         encryptionKey: String? = nil,
         encryptionKeyRef: String? = nil,
         encryptionLevel: String? = nil,
@@ -67,6 +213,8 @@ struct MasterDNSSettings: Codable, Hashable {
         fecSymbolSize: Int = 0,
         fecFlushTimeoutMs: Int = 25
     ) {
+        self.runtimeMode = runtimeMode
+        self.clientConfig = clientConfig
         self.encryptionKey = encryptionKey
         self.encryptionKeyRef = encryptionKeyRef
         self.encryptionLevel = encryptionLevel
@@ -83,6 +231,8 @@ struct MasterDNSSettings: Codable, Hashable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        runtimeMode = try container.decodeIfPresent(MasterDNSRuntimeMode.self, forKey: .runtimeMode) ?? .hevSocks
+        clientConfig = try container.decodeIfPresent([String: ProfileJSONValue].self, forKey: .clientConfig) ?? [:]
         encryptionKey = try container.decodeIfPresent(String.self, forKey: .encryptionKey)
         encryptionKeyRef = try container.decodeIfPresent(String.self, forKey: .encryptionKeyRef)
         let decodedEncryptionLevel = try container.decodeIfPresent(String.self, forKey: .encryptionLevel)
@@ -106,6 +256,103 @@ struct MasterDNSSettings: Codable, Hashable {
         fecOverheadPercent = try container.decodeIfPresent(Int.self, forKey: .fecOverheadPercent) ?? 15
         fecSymbolSize = try container.decodeIfPresent(Int.self, forKey: .fecSymbolSize) ?? 0
         fecFlushTimeoutMs = try container.decodeIfPresent(Int.self, forKey: .fecFlushTimeoutMs) ?? 25
+    }
+
+    mutating func normalizeClientConfig(fallbackDomains: [String]) -> [String] {
+        var normalizedClientConfig: [String: ProfileJSONValue] = [:]
+        for (key, value) in clientConfig {
+            let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            guard !normalizedKey.isEmpty else {
+                continue
+            }
+            normalizedClientConfig[normalizedKey] = value
+        }
+        clientConfig = normalizedClientConfig
+
+        let canonicalDomains = VPNProfile.normalizedDomains(
+            clientConfig["DOMAINS"]?.stringArrayValue ?? fallbackDomains
+        )
+        if !canonicalDomains.isEmpty {
+            clientConfig["DOMAINS"] = .array(canonicalDomains.map { .string($0) })
+        }
+
+        let defaultProtocolType = runtimeMode == .nativePacket ? "TCP" : "SOCKS5"
+        let configuredProtocolType = clientConfig["PROTOCOL_TYPE"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+        if runtimeMode == .nativePacket {
+            clientConfig["PROTOCOL_TYPE"] = .string("TCP")
+        } else {
+            clientConfig["PROTOCOL_TYPE"] = .string(configuredProtocolType ?? defaultProtocolType)
+        }
+
+        if runtimeMode == .nativePacket {
+            clientConfig["LOCAL_DNS_ENABLED"] = .bool(true)
+        } else if clientConfig["LOCAL_DNS_ENABLED"] == nil {
+            clientConfig["LOCAL_DNS_ENABLED"] = .bool(false)
+        }
+
+        if let method = clientConfig["DATA_ENCRYPTION_METHOD"]?.intValue {
+            encryptionMethod = method
+        } else {
+            clientConfig["DATA_ENCRYPTION_METHOD"] = .int(encryptionMethod)
+        }
+
+        if let baseEncode = clientConfig["BASE_ENCODE_DATA"]?.boolValue {
+            baseEncodeData = baseEncode
+        } else {
+            clientConfig["BASE_ENCODE_DATA"] = .bool(baseEncodeData)
+        }
+
+        if let key = clientConfig["ENCRYPTION_KEY"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !key.isEmpty,
+           encryptionKey?.isEmpty ?? true {
+            encryptionKey = key
+        } else if clientConfig["ENCRYPTION_KEY"] == nil,
+                  let key = encryptionKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !key.isEmpty {
+            clientConfig["ENCRYPTION_KEY"] = .string(key)
+        }
+
+        if let fecConfigLevel = clientConfig["FEC_LEVEL"]?.stringValue {
+            fecLevel = fecConfigLevel
+        } else if let fecLevel {
+            clientConfig["FEC_LEVEL"] = .string(fecLevel)
+        }
+        if let enabled = clientConfig["FEC_ENABLED"]?.boolValue {
+            fecEnabled = enabled
+        } else {
+            clientConfig["FEC_ENABLED"] = .bool(fecEnabled)
+        }
+        if let direction = clientConfig["FEC_DIRECTION"]?.stringValue, !direction.isEmpty {
+            fecDirection = direction
+        } else {
+            clientConfig["FEC_DIRECTION"] = .string(fecDirection)
+        }
+        fecGroupSize = normalizedFECIntConfig("FEC_GROUP_SIZE", fallback: fecGroupSize)
+        fecOverheadPercent = normalizedFECIntConfig("FEC_OVERHEAD_PERCENT", fallback: fecOverheadPercent)
+        fecSymbolSize = normalizedFECIntConfig("FEC_SYMBOL_SIZE", fallback: fecSymbolSize)
+        fecFlushTimeoutMs = normalizedFECIntConfig("FEC_FLUSH_TIMEOUT_MS", fallback: fecFlushTimeoutMs)
+
+        return canonicalDomains
+    }
+
+    mutating func stripSecrets() {
+        encryptionKey = nil
+        clientConfig.removeValue(forKey: "ENCRYPTION_KEY")
+    }
+
+    mutating func injectEncryptionKey(_ key: String) {
+        encryptionKey = key
+        clientConfig["ENCRYPTION_KEY"] = .string(key)
+    }
+
+    private mutating func normalizedFECIntConfig(_ key: String, fallback: Int) -> Int {
+        if let configured = clientConfig[key]?.intValue {
+            return configured
+        }
+        clientConfig[key] = .int(fallback)
+        return fallback
     }
 
     static func normalizedEncryptionLevel(_ level: String?) -> String? {
@@ -185,11 +432,14 @@ struct MasterDNSSettings: Codable, Hashable {
 }
 
 struct VPNProfile: Codable, Identifiable, Hashable {
+    static let iosForceHevSocksClientConfigKey = "IOS_FORCE_HEV_SOCKS"
+
     var id: UUID
     var version: Int
     var name: String
     var tunnelProtocol: TunnelProtocol
     var domain: String
+    var domains: [String]
     var resolvers: [ResolverEndpoint]
     var expectedExitIP: String?
     var expectedDNSServers: [String]?
@@ -202,6 +452,7 @@ struct VPNProfile: Codable, Identifiable, Hashable {
         case name
         case tunnelProtocol = "protocol"
         case domain
+        case domains
         case resolvers
         case expectedExitIP
         case expectedDNSServers
@@ -215,6 +466,7 @@ struct VPNProfile: Codable, Identifiable, Hashable {
         name: String,
         tunnelProtocol: TunnelProtocol,
         domain: String,
+        domains: [String]? = nil,
         resolvers: [ResolverEndpoint],
         expectedExitIP: String? = nil,
         expectedDNSServers: [String]? = nil,
@@ -226,6 +478,7 @@ struct VPNProfile: Codable, Identifiable, Hashable {
         self.name = name
         self.tunnelProtocol = tunnelProtocol
         self.domain = domain
+        self.domains = domains ?? [domain]
         self.resolvers = resolvers
         self.expectedExitIP = expectedExitIP
         self.expectedDNSServers = expectedDNSServers
@@ -240,11 +493,29 @@ struct VPNProfile: Codable, Identifiable, Hashable {
         name = try container.decode(String.self, forKey: .name)
         tunnelProtocol = try container.decode(TunnelProtocol.self, forKey: .tunnelProtocol)
         domain = try container.decode(String.self, forKey: .domain)
+        domains = try container.decodeIfPresent([String].self, forKey: .domains) ?? [domain]
         resolvers = try container.decode([ResolverEndpoint].self, forKey: .resolvers)
         expectedExitIP = try container.decodeIfPresent(String.self, forKey: .expectedExitIP)
         expectedDNSServers = try container.decodeIfPresent([String].self, forKey: .expectedDNSServers)
         vaydns = try container.decodeIfPresent(VayDNSSettings.self, forKey: .vaydns)
         masterdns = try container.decodeIfPresent(MasterDNSSettings.self, forKey: .masterdns)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(version, forKey: .version)
+        try container.encode(name, forKey: .name)
+        try container.encode(tunnelProtocol, forKey: .tunnelProtocol)
+        try container.encode(domain, forKey: .domain)
+        if tunnelProtocol == .masterdns || domains != [domain] {
+            try container.encode(domains, forKey: .domains)
+        }
+        try container.encode(resolvers, forKey: .resolvers)
+        try container.encodeIfPresent(expectedExitIP, forKey: .expectedExitIP)
+        try container.encodeIfPresent(expectedDNSServers, forKey: .expectedDNSServers)
+        try container.encodeIfPresent(vaydns, forKey: .vaydns)
+        try container.encodeIfPresent(masterdns, forKey: .masterdns)
     }
 
     func normalizedForStorage() -> VPNProfile {
@@ -254,6 +525,13 @@ struct VPNProfile: Codable, Identifiable, Hashable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        copy.domains = Self.normalizedDomains(copy.domains.isEmpty ? [copy.domain] : copy.domains)
+        if copy.domains.isEmpty, !copy.domain.isEmpty {
+            copy.domains = [copy.domain]
+        }
+        if copy.tunnelProtocol == .vaydns {
+            copy.domains = copy.domain.isEmpty ? [] : [copy.domain]
+        }
         copy.resolvers = copy.resolvers.map {
             ResolverEndpoint(
                 type: $0.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
@@ -308,8 +586,57 @@ struct VPNProfile: Codable, Identifiable, Hashable {
                     settings.fecFlushTimeoutMs = 25
                 }
             }
+            let domains = settings.normalizeClientConfig(fallbackDomains: copy.domains.isEmpty ? [copy.domain] : copy.domains)
+            if !domains.isEmpty {
+                copy.domains = domains
+                copy.domain = domains[0]
+            }
             copy.masterdns = settings
         }
         return copy
+    }
+
+    func preparedForIOSTunnelStart() -> (
+        profile: VPNProfile,
+        runtimeMode: MasterDNSRuntimeMode,
+        runtimeModeSource: String
+    ) {
+        guard tunnelProtocol == .masterdns else {
+            return (normalizedForStorage(), .hevSocks, "non-masterdns")
+        }
+
+        var copy = normalizedForStorage()
+        guard var settings = copy.masterdns else {
+            return (copy, .hevSocks, "missing-masterdns-settings")
+        }
+
+        if settings.runtimeMode == .hevSocks {
+            settings.clientConfig["PROTOCOL_TYPE"] = .string("SOCKS5")
+            settings.clientConfig["LOCAL_DNS_ENABLED"] = .bool(false)
+            settings.clientConfig[Self.iosForceHevSocksClientConfigKey] = .bool(true)
+            copy.masterdns = settings
+            return (copy.normalizedForStorage(), .hevSocks, "profile-hev-socks")
+        }
+
+        settings.runtimeMode = .nativePacket
+        settings.clientConfig[Self.iosForceHevSocksClientConfigKey] = .bool(false)
+        settings.clientConfig["PROTOCOL_TYPE"] = .string("TCP")
+        settings.clientConfig["LOCAL_DNS_ENABLED"] = .bool(true)
+        copy.masterdns = settings
+        return (copy.normalizedForStorage(), .nativePacket, "profile-native")
+    }
+
+    static func normalizedDomains(_ domains: [String]) -> [String] {
+        var seen = Set<String>()
+        return domains.compactMap { raw in
+            let domain = raw
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            guard !domain.isEmpty, seen.insert(domain).inserted else {
+                return nil
+            }
+            return domain
+        }
     }
 }

@@ -3,6 +3,7 @@
   "name": "Example MasterDNS Custom FEC",
   "protocol": "masterdns",
   "domain": "fec-tunnel.example.com",
+  "domains": ["fec-tunnel.example.com"],
   "expectedExitIP": "203.0.113.30",
   "resolvers": [
     {
@@ -11,9 +12,23 @@
     }
   ],
   "masterdns": {
-    "encryptionKey": "REPLACE_WITH_SHARED_MASTERDNS_KEY",
-    "encryptionLevel": "maximum",
-    "baseEncodeData": false,
+    "runtimeMode": "hevSocks",
+    "clientConfig": {
+      "PROTOCOL_TYPE": "SOCKS5",
+      "DOMAINS": ["fec-tunnel.example.com"],
+      "LOCAL_DNS_ENABLED": false,
+      "IOS_FORCE_HEV_SOCKS": true,
+      "DATA_ENCRYPTION_METHOD": 5,
+      "ENCRYPTION_KEY": "REPLACE_WITH_SHARED_MASTERDNS_KEY",
+      "BASE_ENCODE_DATA": false,
+      "FEC_LEVEL": "balanced",
+      "FEC_ENABLED": true,
+      "FEC_DIRECTION": "download",
+      "FEC_GROUP_SIZE": 12,
+      "FEC_OVERHEAD_PERCENT": 25,
+      "FEC_SYMBOL_SIZE": 0,
+      "FEC_FLUSH_TIMEOUT_MS": 20
+    },
     "fecLevel": "balanced"
   }
 }

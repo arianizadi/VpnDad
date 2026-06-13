@@ -3,6 +3,7 @@
   "name": "Example MasterDNS",
   "protocol": "masterdns",
   "domain": "dns-tunnel.example.com",
+  "domains": ["dns-tunnel.example.com"],
   "expectedExitIP": "203.0.113.20",
   "resolvers": [
     {
@@ -11,8 +12,27 @@
     }
   ],
   "masterdns": {
-    "encryptionKey": "REPLACE_WITH_SHARED_MASTERDNS_KEY",
-    "encryptionMethod": 5,
-    "baseEncodeData": false
+    "runtimeMode": "hevSocks",
+    "clientConfig": {
+      "PROTOCOL_TYPE": "SOCKS5",
+      "DOMAINS": ["dns-tunnel.example.com"],
+      "LOCAL_DNS_ENABLED": false,
+      "IOS_FORCE_HEV_SOCKS": true,
+      "DATA_ENCRYPTION_METHOD": 5,
+      "ENCRYPTION_KEY": "REPLACE_WITH_SHARED_MASTERDNS_KEY",
+      "BASE_ENCODE_DATA": false,
+      "UPLOAD_COMPRESSION_TYPE": 0,
+      "DOWNLOAD_COMPRESSION_TYPE": 0,
+      "MIN_UPLOAD_MTU": 38,
+      "MAX_UPLOAD_MTU": 150,
+      "MIN_DOWNLOAD_MTU": 100,
+      "MAX_DOWNLOAD_MTU": 500,
+      "RESOLVER_BALANCING_STRATEGY": 2,
+      "PACKET_DUPLICATION_COUNT": 2,
+      "SETUP_PACKET_DUPLICATION_COUNT": 2,
+      "RX_TX_WORKERS": 4,
+      "MAX_PACKETS_PER_BATCH": 8,
+      "LOG_LEVEL": "INFO"
+    }
   }
 }

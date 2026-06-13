@@ -12,6 +12,9 @@
 		100000000000000000000003 /* VPNController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* VPNController.swift */; };
 		100000000000000000000004 /* ProfileDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* ProfileDocument.swift */; };
 		100000000000000000000019 /* HealthDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000018 /* HealthDiagnostics.swift */; };
+		10000000000000000000001A /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001D /* Localization.swift */; };
+		10000000000000000000001B /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001D /* Localization.swift */; };
+		10000000000000000000001C /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001C /* Localizable.strings */; };
 		100000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000005 /* Assets.xcassets */; };
 		100000000000000000000006 /* AppConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* AppConstants.swift */; };
 		100000000000000000000007 /* VPNProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* VPNProfile.swift */; };
@@ -64,6 +67,10 @@
 		200000000000000000000003 /* VPNController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VPNController.swift; sourceTree = "<group>"; };
 		200000000000000000000004 /* ProfileDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileDocument.swift; sourceTree = "<group>"; };
 		200000000000000000000018 /* HealthDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthDiagnostics.swift; sourceTree = "<group>"; };
+		200000000000000000000019 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		20000000000000000000001A /* ru */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ru; path = ru.lproj/Localizable.strings; sourceTree = "<group>"; };
+		20000000000000000000001B /* fa */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fa; path = fa.lproj/Localizable.strings; sourceTree = "<group>"; };
+		20000000000000000000001D /* Localization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Localization.swift; sourceTree = "<group>"; };
 		200000000000000000000005 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		200000000000000000000006 /* AppConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConstants.swift; sourceTree = "<group>"; };
 		200000000000000000000007 /* VPNProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VPNProfile.swift; sourceTree = "<group>"; };
@@ -129,6 +136,7 @@
 				200000000000000000000003 /* VPNController.swift */,
 				200000000000000000000018 /* HealthDiagnostics.swift */,
 				200000000000000000000004 /* ProfileDocument.swift */,
+				20000000000000000000001C /* Localizable.strings */,
 				200000000000000000000005 /* Assets.xcassets */,
 				200000000000000000000012 /* Info.plist */,
 				200000000000000000000013 /* VpnDadApp.entitlements */,
@@ -153,6 +161,7 @@
 			isa = PBXGroup;
 			children = (
 				200000000000000000000006 /* AppConstants.swift */,
+				20000000000000000000001D /* Localization.swift */,
 				200000000000000000000007 /* VPNProfile.swift */,
 				200000000000000000000008 /* KeychainStore.swift */,
 				200000000000000000000009 /* ProfileRepository.swift */,
@@ -250,6 +259,8 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
+				ru,
+				fa,
 				Base,
 			);
 			mainGroup = 800000000000000000000001;
@@ -268,6 +279,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				10000000000000000000001C /* Localizable.strings in Resources */,
 				100000000000000000000005 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -292,6 +304,7 @@
 				100000000000000000000019 /* HealthDiagnostics.swift in Sources */,
 				100000000000000000000004 /* ProfileDocument.swift in Sources */,
 				100000000000000000000006 /* AppConstants.swift in Sources */,
+				10000000000000000000001A /* Localization.swift in Sources */,
 				100000000000000000000007 /* VPNProfile.swift in Sources */,
 				100000000000000000000008 /* KeychainStore.swift in Sources */,
 				100000000000000000000009 /* ProfileRepository.swift in Sources */,
@@ -307,6 +320,7 @@
 				10000000000000000000000E /* HevSocks5TunnelRunner.swift in Sources */,
 				10000000000000000000000F /* TunnelRuntimeError.swift in Sources */,
 				100000000000000000000010 /* AppConstants.swift in Sources */,
+				10000000000000000000001B /* Localization.swift in Sources */,
 				100000000000000000000011 /* VPNProfile.swift in Sources */,
 				100000000000000000000012 /* KeychainStore.swift in Sources */,
 				100000000000000000000013 /* ProfileRepository.swift in Sources */,
@@ -322,6 +336,19 @@
 			targetProxy = 300000000000000000000001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		20000000000000000000001C /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				200000000000000000000019 /* en */,
+				20000000000000000000001A /* ru */,
+				20000000000000000000001B /* fa */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
 		C00000000000000000000001 /* Debug */ = {

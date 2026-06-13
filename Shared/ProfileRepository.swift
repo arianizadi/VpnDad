@@ -10,13 +10,13 @@ enum ProfileRepositoryError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .profileNotFound:
-            return "Profile was not found"
+            return L10n.string("Profile was not found")
         case .missingSecret(let key):
-            return "Missing profile secret: \(key)"
+            return L10n.string("Missing profile secret: %@", key)
         case .invalidProfile(let reason):
             return reason
         case .sharedContainerUnavailable(let identifier):
-            return "App Group container is unavailable: \(identifier)"
+            return L10n.string("App Group container is unavailable: %@", identifier)
         }
     }
 }
@@ -30,6 +30,26 @@ struct TunnelMetrics: Codable, Equatable {
     var startedAt: Date?
     var updatedAt: Date
     var uptimeSeconds: Int
+
+    var providerStartedAt: Date? = nil
+    var providerHeartbeatAt: Date? = nil
+    var providerLastTelemetryWriteAt: Date? = nil
+    var providerStoppingAt: Date? = nil
+    var providerStoppedAt: Date? = nil
+    var providerStopReasonRaw: Int? = nil
+    var providerStopReasonName: String? = nil
+    var providerLastLifecycleEvent: String? = nil
+    var runtimeMode: String? = nil
+    var runtimeModeSource: String? = nil
+    var hevRunning: Bool? = nil
+    var hevExitCode: Int? = nil
+    var hevExitedAt: Date? = nil
+    var packetBridgeExitedAt: Date? = nil
+    var packetBridgeExitCode: Int? = nil
+    var memoryResidentBytes: UInt64? = nil
+    var memoryPhysicalFootprintBytes: UInt64? = nil
+    var threadCount: Int? = nil
+    var openFileDescriptorCount: Int? = nil
 
     var resolverAddress: String? = nil
     var sessionID: Int? = nil
@@ -100,6 +120,30 @@ struct TunnelMetrics: Codable, Equatable {
     var bridgeShortWrites: UInt64
     var lastBridgeError: String? = nil
 
+    var nativeTCPFlowsActive: UInt64? = nil
+    var nativeTCPFlowsCreated: UInt64? = nil
+    var nativeTCPFlowsClosed: UInt64? = nil
+    var nativeTCPEndpointErrors: UInt64? = nil
+    var nativeTCPEndpointResets: UInt64? = nil
+    var nativeInputPackets: UInt64? = nil
+    var nativeInputBytes: UInt64? = nil
+    var nativeOutputPackets: UInt64? = nil
+    var nativeOutputBytes: UInt64? = nil
+    var nativeDNSQueries: UInt64? = nil
+    var nativeDNSCacheHits: UInt64? = nil
+    var nativeDNSPending: UInt64? = nil
+    var nativeDNSResponses: UInt64? = nil
+    var nativeUnsupportedUDP: UInt64? = nil
+    var nativeUnsupportedUDPRejects: UInt64? = nil
+    var nativeUnsupportedUDPTopPorts: String? = nil
+    var nativeMalformedPackets: UInt64? = nil
+    var nativePacketWriteErrors: UInt64? = nil
+    var nativePacketFlowWritePackets: UInt64? = nil
+    var nativePacketFlowWriteBytes: UInt64? = nil
+    var nativePacketFlowWriteFailures: UInt64? = nil
+    var nativePacketFlowDroppedPackets: UInt64? = nil
+    var nativePacketFlowInvalidOutputPackets: UInt64? = nil
+
     var engineRunning: Bool? = nil
     var engineStartedAt: String? = nil
     var engineLastError: String? = nil
@@ -153,7 +197,7 @@ struct HealthProbeCheck: Codable, Equatable {
     var statusCode: Int?
     var detail: String
 
-    static func notRun(_ detail: String = "Not run yet") -> HealthProbeCheck {
+    static func notRun(_ detail: String = L10n.string("Not run yet")) -> HealthProbeCheck {
         HealthProbeCheck(
             status: .notRun,
             checkedAt: nil,
@@ -259,6 +303,12 @@ struct HealthProbeSnapshot: Codable, Equatable {
 }
 
 final class ProfileRepository {
+    private static let tunnelLogTimestampFormatter = ISO8601DateFormatter()
+    private let maxMasterDNSResolverCIDRHosts = 1024
+    private let tunnelLogRotateAtBytes: UInt64 = 1 << 20
+    private let tunnelLogKeepBytes = 128 * 1024
+    private let tunnelLogLock = NSLock()
+    private var tunnelLogHandle: FileHandle?
     private let fileManager: FileManager
     private let keychain: KeychainStore
 
@@ -284,7 +334,7 @@ final class ProfileRepository {
         if var settings = stored.masterdns, let key = settings.encryptionKey, !key.isEmpty {
             let reference = secretReference(for: stored.id, field: "masterdns.encryptionKey")
             try keychain.set(key, account: reference)
-            settings.encryptionKey = nil
+            settings.stripSecrets()
             settings.encryptionKeyRef = reference
             stored.masterdns = settings
         }
@@ -313,7 +363,7 @@ final class ProfileRepository {
         if var settings = updated.masterdns, let key = settings.encryptionKey, !key.isEmpty {
             let reference = settings.encryptionKeyRef ?? secretReference(for: updated.id, field: "masterdns.encryptionKey")
             try keychain.set(key, account: reference)
-            settings.encryptionKey = nil
+            settings.stripSecrets()
             settings.encryptionKeyRef = reference
             updated.masterdns = settings
         }
@@ -360,7 +410,7 @@ final class ProfileRepository {
             guard let key, !key.isEmpty else {
                 throw ProfileRepositoryError.missingSecret(reference)
             }
-            settings.encryptionKey = key
+            settings.injectEncryptionKey(key)
             resolved.masterdns = settings
         }
         try validate(resolved)
@@ -368,19 +418,19 @@ final class ProfileRepository {
     }
 
     func profileJSONForTunnel(id: UUID) throws -> String {
-        try profileJSONString(resolvedProfile(id: id))
+        try profileJSONString(resolvedProfile(id: id), includeSecrets: true)
     }
 
-    func profileJSONString(_ profile: VPNProfile) throws -> String {
-        let data = try profileJSONData(profile)
+    func profileJSONString(_ profile: VPNProfile, includeSecrets: Bool = false) throws -> String {
+        let data = try profileJSONData(profile, includeSecrets: includeSecrets)
         guard let string = String(data: data, encoding: .utf8) else {
-            throw ProfileRepositoryError.invalidProfile("Profile JSON encoding failed")
+            throw ProfileRepositoryError.invalidProfile(L10n.string("Profile JSON encoding failed"))
         }
         return string
     }
 
-    func profileJSONData(_ profile: VPNProfile) throws -> Data {
-        let resolved = try resolved(profile)
+    func profileJSONData(_ profile: VPNProfile, includeSecrets: Bool = false) throws -> Data {
+        let resolved = includeSecrets ? try resolved(profile) : try exportable(profile)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(resolved)
@@ -400,7 +450,7 @@ final class ProfileRepository {
         return UUID(uuidString: raw.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    func readTunnelLog(maxBytes: Int = 12000) throws -> String {
+    func readTunnelLog(maxBytes: Int = 128000) throws -> String {
         let url = try tunnelLogURL()
         guard fileManager.fileExists(atPath: url.path) else {
             return ""
@@ -412,19 +462,46 @@ final class ProfileRepository {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
+    // Called for every tunnel log line, which is hundreds of times per second
+    // under load, so the file handle stays open between calls and the file is
+    // trimmed in place once it grows past the rotation threshold.
     func appendTunnelLog(_ line: String) throws {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let text = "\(timestamp) \(line)\n"
+        let timestamp = Self.tunnelLogTimestampFormatter.string(from: Date())
+        let data = Data("\(timestamp) \(line)\n".utf8)
         let url = try tunnelLogURL()
-        let data = Data(text.utf8)
 
-        if fileManager.fileExists(atPath: url.path),
-           let handle = try? FileHandle(forWritingTo: url) {
-            _ = try? handle.seekToEnd()
-            try handle.write(contentsOf: data)
-            try handle.close()
-        } else {
+        tunnelLogLock.lock()
+        defer { tunnelLogLock.unlock() }
+
+        if tunnelLogHandle == nil {
+            if !fileManager.fileExists(atPath: url.path) {
+                fileManager.createFile(atPath: url.path, contents: nil)
+            }
+            if let handle = try? FileHandle(forWritingTo: url) {
+                _ = try? handle.seekToEnd()
+                tunnelLogHandle = handle
+            }
+        }
+
+        guard let handle = tunnelLogHandle else {
             try data.write(to: url, options: .atomic)
+            return
+        }
+
+        do {
+            try handle.write(contentsOf: data)
+        } catch {
+            try? handle.close()
+            tunnelLogHandle = nil
+            throw error
+        }
+
+        if let offset = try? handle.offset(), offset > tunnelLogRotateAtBytes {
+            try? handle.close()
+            tunnelLogHandle = nil
+            if let existing = try? Data(contentsOf: url) {
+                try? existing.suffix(tunnelLogKeepBytes).write(to: url, options: .atomic)
+            }
         }
     }
 
@@ -482,49 +559,165 @@ final class ProfileRepository {
         try data.write(to: profilesURL(), options: .atomic)
     }
 
-    private func validate(_ profile: VPNProfile) throws {
-        if profile.version != 1 {
-            throw ProfileRepositoryError.invalidProfile("Unsupported profile version \(profile.version)")
+    private func exportable(_ profile: VPNProfile) throws -> VPNProfile {
+        var copy = profile.normalizedForStorage()
+        if var settings = copy.masterdns {
+            settings.stripSecrets()
+            copy.masterdns = settings
+        }
+        try validate(copy, requireSecrets: false)
+        return copy
+    }
+
+    private func validate(_ profile: VPNProfile, requireSecrets: Bool = true) throws {
+        if profile.version != 1 && profile.version != 2 {
+            throw ProfileRepositoryError.invalidProfile(L10n.string("Unsupported profile version %d", profile.version))
         }
         if profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            throw ProfileRepositoryError.invalidProfile("Profile name is required")
+            throw ProfileRepositoryError.invalidProfile(L10n.string("Profile name is required"))
         }
         if profile.domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            throw ProfileRepositoryError.invalidProfile("Domain is required")
+            throw ProfileRepositoryError.invalidProfile(L10n.string("Domain is required"))
         }
         if profile.resolvers.isEmpty {
-            throw ProfileRepositoryError.invalidProfile("At least one resolver is required")
+            throw ProfileRepositoryError.invalidProfile(L10n.string("At least one resolver is required"))
         }
         if let expectedExitIP = profile.expectedExitIP,
            !expectedExitIP.isEmpty,
            !isValidIPAddress(expectedExitIP) {
-            throw ProfileRepositoryError.invalidProfile("Expected exit IP must be an IPv4 or IPv6 address")
+            throw ProfileRepositoryError.invalidProfile(L10n.string("Expected exit IP must be an IPv4 or IPv6 address"))
         }
         for expectedDNSServer in profile.expectedDNSServers ?? [] where !isValidIPAddress(expectedDNSServer) {
-            throw ProfileRepositoryError.invalidProfile("Expected DNS servers must be IPv4 or IPv6 addresses")
+            throw ProfileRepositoryError.invalidProfile(L10n.string("Expected DNS servers must be IPv4 or IPv6 addresses"))
         }
 
         switch profile.tunnelProtocol {
         case .vaydns:
             if profile.vaydns?.publicKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
-                throw ProfileRepositoryError.invalidProfile("VayDNS public key is required")
+                throw ProfileRepositoryError.invalidProfile(L10n.string("VayDNS public key is required"))
             }
         case .masterdns:
+            try validateMasterDNSResolvers(profile.resolvers)
+            try validateMasterDNSClientConfig(profile)
+
             if let encryptionLevel = profile.masterdns?.encryptionLevel,
                MasterDNSSettings.encryptionMethod(forLevel: encryptionLevel) == nil {
-                throw ProfileRepositoryError.invalidProfile("Unknown MasterDnsVPN encryption level")
+                throw ProfileRepositoryError.invalidProfile(L10n.string("Unknown MasterDnsVPN encryption level"))
             }
             let method = profile.masterdns?.encryptionMethod ?? 0
-            if method < 3 || method > 5 {
-                throw ProfileRepositoryError.invalidProfile("MasterDnsVPN requires AES-GCM encryption")
+            if method < 0 || method > 5 {
+                throw ProfileRepositoryError.invalidProfile(L10n.string("MasterDnsVPN encryption method must be between 0 and 5"))
             }
             if let fecLevel = profile.masterdns?.fecLevel,
                MasterDNSSettings.fecSettings(forLevel: fecLevel) == nil {
-                throw ProfileRepositoryError.invalidProfile("Unknown MasterDnsVPN FEC level")
+                throw ProfileRepositoryError.invalidProfile(L10n.string("Unknown MasterDnsVPN FEC level"))
             }
-            if profile.masterdns?.encryptionKey?.isEmpty ?? true {
-                throw ProfileRepositoryError.invalidProfile("MasterDnsVPN encryption key is required")
+            if requireSecrets, profile.masterdns?.encryptionKey?.isEmpty ?? true {
+                throw ProfileRepositoryError.invalidProfile(L10n.string("MasterDnsVPN encryption key is required"))
             }
+        }
+    }
+
+    private func validateMasterDNSResolvers(_ resolvers: [ResolverEndpoint]) throws {
+        for resolver in resolvers {
+            let type = resolver.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard type == "udp" else {
+                throw ProfileRepositoryError.invalidProfile(L10n.string("MasterDnsVPN iOS supports only UDP resolvers"))
+            }
+
+            let address = resolver.address.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard isValidIPAddressEndpoint(address) || isValidBoundedCIDREndpoint(address) else {
+                throw ProfileRepositoryError.invalidProfile(L10n.string("MasterDnsVPN resolver must be an IPv4, IPv6, or bounded CIDR endpoint with an optional port"))
+            }
+        }
+    }
+
+    private func validateMasterDNSClientConfig(_ profile: VPNProfile) throws {
+        guard let settings = profile.masterdns else {
+            throw ProfileRepositoryError.invalidProfile(L10n.string("masterdns settings are required"))
+        }
+
+        let config = settings.clientConfig
+        let domains = config["DOMAINS"]?.stringArrayValue ?? profile.domains
+        if VPNProfile.normalizedDomains(domains).isEmpty {
+            throw ProfileRepositoryError.invalidProfile(L10n.string("DOMAINS must contain at least one domain"))
+        }
+
+        let protocolType = config["PROTOCOL_TYPE"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased() ?? "SOCKS5"
+        if protocolType != "SOCKS5" && protocolType != "TCP" {
+            throw ProfileRepositoryError.invalidProfile(L10n.string("MasterDnsVPN PROTOCOL_TYPE must be SOCKS5 or TCP"))
+        }
+
+        let localDNSEnabled = config["LOCAL_DNS_ENABLED"]?.boolValue ?? false
+        if settings.runtimeMode == .hevSocks {
+            if protocolType != "SOCKS5" {
+                throw ProfileRepositoryError.invalidProfile(L10n.string("Hev SOCKS mode requires MasterDnsVPN PROTOCOL_TYPE SOCKS5"))
+            }
+            if localDNSEnabled {
+                throw ProfileRepositoryError.invalidProfile(L10n.string("Hev SOCKS mode cannot use the MasterDnsVPN local DNS listener"))
+            }
+        } else {
+            if protocolType != "TCP" {
+                throw ProfileRepositoryError.invalidProfile(L10n.string("Native Packet mode requires MasterDnsVPN PROTOCOL_TYPE TCP"))
+            }
+            if !localDNSEnabled {
+                throw ProfileRepositoryError.invalidProfile(L10n.string("Native Packet mode requires the MasterDnsVPN local DNS listener"))
+            }
+        }
+
+        try validateClientConfigInt(config, "DATA_ENCRYPTION_METHOD", min: 0, max: 5)
+        try validateClientConfigInt(config, "UPLOAD_COMPRESSION_TYPE", min: 0, max: 2)
+        try validateClientConfigInt(config, "DOWNLOAD_COMPRESSION_TYPE", min: 0, max: 2)
+        try validateClientConfigInt(config, "COMPRESSION_MIN_SIZE", min: 0, max: 1_000_000)
+        try validateClientConfigInt(config, "RESOLVER_BALANCING_STRATEGY", min: 0, max: 8)
+        try validateClientConfigInt(config, "PACKET_DUPLICATION_COUNT", min: 1, max: 10)
+        try validateClientConfigInt(config, "SETUP_PACKET_DUPLICATION_COUNT", min: 1, max: 12)
+        try validateClientConfigInt(config, "RX_TX_WORKERS", min: 1, max: 128)
+        try validateClientConfigInt(config, "TUNNEL_PROCESS_WORKERS", min: 0, max: 256)
+        try validateClientConfigInt(config, "MAX_PACKETS_PER_BATCH", min: 1, max: 64)
+        try validateClientConfigInt(config, "ARQ_WINDOW_SIZE", min: 1, max: 8_000)
+        try validateClientConfigInt(config, "ARQ_MAX_CONTROL_RETRIES", min: 1, max: 5_000)
+        try validateClientConfigInt(config, "ARQ_MAX_DATA_RETRIES", min: 1, max: 100_000)
+        try validateClientConfigInt(config, "FEC_GROUP_SIZE", min: 1, max: 256)
+        try validateClientConfigInt(config, "FEC_OVERHEAD_PERCENT", min: 0, max: 100)
+        try validateClientConfigInt(config, "FEC_SYMBOL_SIZE", min: 0, max: 65_535)
+        try validateClientConfigInt(config, "FEC_FLUSH_TIMEOUT_MS", min: 0, max: 60_000)
+
+        let minUpload = config["MIN_UPLOAD_MTU"]?.intValue
+        let maxUpload = config["MAX_UPLOAD_MTU"]?.intValue
+        let minDownload = config["MIN_DOWNLOAD_MTU"]?.intValue
+        let maxDownload = config["MAX_DOWNLOAD_MTU"]?.intValue
+        for (key, value) in [
+            ("MIN_UPLOAD_MTU", minUpload),
+            ("MAX_UPLOAD_MTU", maxUpload),
+            ("MIN_DOWNLOAD_MTU", minDownload),
+            ("MAX_DOWNLOAD_MTU", maxDownload)
+        ] where (value ?? 0) < 0 {
+            throw ProfileRepositoryError.invalidProfile(L10n.string("%@ cannot be negative", key))
+        }
+        if let minUpload, let maxUpload, maxUpload > 0, minUpload > maxUpload {
+            throw ProfileRepositoryError.invalidProfile(L10n.string("MIN_UPLOAD_MTU cannot be greater than MAX_UPLOAD_MTU"))
+        }
+        if let minDownload, let maxDownload, maxDownload > 0, minDownload > maxDownload {
+            throw ProfileRepositoryError.invalidProfile(L10n.string("MIN_DOWNLOAD_MTU cannot be greater than MAX_DOWNLOAD_MTU"))
+        }
+    }
+
+    private func validateClientConfigInt(
+        _ config: [String: ProfileJSONValue],
+        _ key: String,
+        min: Int,
+        max: Int
+    ) throws {
+        guard let value = config[key] else {
+            return
+        }
+        guard let intValue = value.intValue, intValue >= min, intValue <= max else {
+            throw ProfileRepositoryError.invalidProfile(
+                L10n.string("%@ must be between %d and %d", key, min, max)
+            )
         }
     }
 
@@ -586,5 +779,134 @@ final class ProfileRepository {
 
         var ipv6 = in6_addr()
         return value.withCString { inet_pton(AF_INET6, $0, &ipv6) } == 1
+    }
+
+    private func isValidIPAddressEndpoint(_ value: String) -> Bool {
+        let endpoint = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !endpoint.isEmpty else {
+            return false
+        }
+
+        if isValidIPAddress(endpoint) {
+            return true
+        }
+
+        if endpoint.hasPrefix("[") {
+            guard let closingBracket = endpoint.firstIndex(of: "]") else {
+                return false
+            }
+
+            let host = String(endpoint[endpoint.index(after: endpoint.startIndex)..<closingBracket])
+            guard isValidIPAddress(host) else {
+                return false
+            }
+
+            let suffix = endpoint[endpoint.index(after: closingBracket)...]
+            guard !suffix.isEmpty else {
+                return true
+            }
+
+            guard suffix.first == ":" else {
+                return false
+            }
+
+            return isValidPort(String(suffix.dropFirst()))
+        }
+
+        let parts = endpoint.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2 else {
+            return false
+        }
+
+        return isValidIPAddress(String(parts[0])) && isValidPort(String(parts[1]))
+    }
+
+    private func isValidBoundedCIDREndpoint(_ value: String) -> Bool {
+        guard let host = endpointHost(from: value), host.contains("/") else {
+            return false
+        }
+        return boundedCIDRHostCount(host).map { $0 <= maxMasterDNSResolverCIDRHosts } ?? false
+    }
+
+    private func endpointHost(from value: String) -> String? {
+        let endpoint = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !endpoint.isEmpty else {
+            return nil
+        }
+
+        if endpoint.hasPrefix("[") {
+            guard let closingBracket = endpoint.firstIndex(of: "]") else {
+                return nil
+            }
+            let host = String(endpoint[endpoint.index(after: endpoint.startIndex)..<closingBracket])
+            let suffix = endpoint[endpoint.index(after: closingBracket)...]
+            if suffix.isEmpty {
+                return host
+            }
+            guard suffix.first == ":", isValidPort(String(suffix.dropFirst())) else {
+                return nil
+            }
+            return host
+        }
+
+        if isValidIPAddress(endpoint) || boundedCIDRHostCount(endpoint) != nil {
+            return endpoint
+        }
+
+        guard endpoint.filter({ $0 == ":" }).count == 1,
+              let separator = endpoint.lastIndex(of: ":") else {
+            return nil
+        }
+        let host = String(endpoint[..<separator])
+        let port = String(endpoint[endpoint.index(after: separator)...])
+        guard isValidPort(port) else {
+            return nil
+        }
+        return host
+    }
+
+    private func boundedCIDRHostCount(_ value: String) -> Int? {
+        let parts = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let bits = Int(parts[1]) else {
+            return nil
+        }
+
+        let ip = String(parts[0])
+        if isValidIPv4Address(ip), bits >= 0, bits <= 32 {
+            let hostBits = 32 - bits
+            if hostBits >= 31 {
+                return hostBits == 31 ? 2 : nil
+            }
+            return max((1 << hostBits) - 2, 1)
+        }
+
+        if isValidIPv6Address(ip), bits >= 0, bits <= 128 {
+            let hostBits = 128 - bits
+            guard hostBits <= 10 else {
+                return nil
+            }
+            let total = 1 << hostBits
+            return bits < 127 ? max(total - 1, 1) : total
+        }
+
+        return nil
+    }
+
+    private func isValidIPv4Address(_ value: String) -> Bool {
+        var ipv4 = in_addr()
+        return value.withCString { inet_pton(AF_INET, $0, &ipv4) } == 1
+    }
+
+    private func isValidIPv6Address(_ value: String) -> Bool {
+        var ipv6 = in6_addr()
+        return value.withCString { inet_pton(AF_INET6, $0, &ipv6) } == 1
+    }
+
+    private func isValidPort(_ value: String) -> Bool {
+        guard let port = Int(value), port >= 1, port <= 65535 else {
+            return false
+        }
+        return String(port) == value
     }
 }

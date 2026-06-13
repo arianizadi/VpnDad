@@ -16,19 +16,19 @@ enum TunnelHealthVerdict: String, Codable, Equatable {
     var displayName: String {
         switch self {
         case .disconnected:
-            return "Disconnected"
+            return L10n.string("Disconnected")
         case .starting:
-            return "Starting"
+            return L10n.string("Starting")
         case .working:
-            return "Working"
+            return L10n.string("Working")
         case .degraded:
-            return "Degraded"
+            return L10n.string("Degraded")
         case .reconnectNeeded:
-            return "Reconnect Needed"
+            return L10n.string("Reconnect Needed")
         case .broken:
-            return "Broken"
+            return L10n.string("Broken")
         case .waitingForTraffic:
-            return "Waiting for Traffic"
+            return L10n.string("Waiting for Traffic")
         }
     }
 
@@ -89,15 +89,15 @@ enum TunnelHealthEvaluator {
         case .invalid, .disconnected:
             return TunnelHealthReport(
                 verdict: .disconnected,
-                summary: "VPN is not connected.",
-                evidence: ["iOS status is \(vpnStatus.displayName)."],
+                summary: L10n.string("VPN is not connected."),
+                evidence: disconnectedEvidence(vpnStatus: vpnStatus, metrics: metrics),
                 timeline: timeline
             )
         case .connecting, .reasserting, .disconnecting:
             return TunnelHealthReport(
                 verdict: .starting,
-                summary: "VPN is changing state.",
-                evidence: ["iOS status is \(vpnStatus.displayName)."],
+                summary: L10n.string("VPN is changing state."),
+                evidence: [L10n.string("iOS status is %@.", vpnStatus.displayName)],
                 timeline: timeline
             )
         case .connected:
@@ -105,8 +105,8 @@ enum TunnelHealthEvaluator {
         @unknown default:
             return TunnelHealthReport(
                 verdict: .starting,
-                summary: "iOS returned an unknown VPN status.",
-                evidence: ["iOS status is \(vpnStatus.rawValue)."],
+                summary: L10n.string("iOS returned an unknown VPN status."),
+                evidence: [L10n.string("iOS status is %@.", "\(vpnStatus.rawValue)")],
                 timeline: timeline
             )
         }
@@ -114,8 +114,8 @@ enum TunnelHealthEvaluator {
         guard let metrics else {
             return TunnelHealthReport(
                 verdict: .waitingForTraffic,
-                summary: "Connected, waiting for tunnel metrics.",
-                evidence: ["No extension metrics have been written yet."],
+                summary: L10n.string("Connected, waiting for tunnel metrics."),
+                evidence: [L10n.string("No extension metrics have been written yet.")],
                 timeline: timeline
             )
         }
@@ -134,11 +134,12 @@ enum TunnelHealthEvaluator {
             (metrics.arqDataTTLExpired ?? 0) +
             (metrics.arqControlMaxRetriesExceeded ?? 0) +
             (metrics.arqControlTTLExpired ?? 0)
-        let arqRejects = totalARQRejects(metrics)
-        let arqRejectRatio = arqQueued > 0 ? Double(arqRejects) / Double(arqQueued) : 0
+        let arqQueueRejects = totalARQQueueRejects(metrics)
+        let arqAckRejects = metrics.arqDataAckPacketsRejected ?? 0
+        let arqQueueRejectRatio = arqQueued > 0 ? Double(arqQueueRejects) / Double(arqQueued) : 0
 
         if metrics.status == "failed" {
-            return reconnectNeeded("Reconnect needed: tunnel startup failed.", evidence: compact([
+            return reconnectNeeded(L10n.string("Reconnect needed: tunnel startup failed."), evidence: compact([
                 metrics.lastError,
                 metrics.engineLastError,
                 metrics.lastLogLine
@@ -146,7 +147,7 @@ enum TunnelHealthEvaluator {
         }
 
         if metrics.engineRunning == false {
-            return reconnectNeeded("Reconnect needed: iOS is connected, but the engine is not running.", evidence: compact([
+            return reconnectNeeded(L10n.string("Reconnect needed: iOS is connected, but the engine is not running."), evidence: compact([
                 metrics.engineLastError,
                 metrics.lastError,
                 metrics.lastLogLine
@@ -155,18 +156,18 @@ enum TunnelHealthEvaluator {
 
         if currentProbe?.tunnelHandshake.status == .failed {
             return reconnectNeeded(
-                "Reconnect needed: tunnel handshake check failed.",
-                evidence: [currentProbe?.tunnelHandshake.detail ?? "No handshake detail was available."],
+                L10n.string("Reconnect needed: tunnel handshake check failed."),
+                evidence: [currentProbe?.tunnelHandshake.detail ?? L10n.string("No handshake detail was available.")],
                 timeline: timeline
             )
         }
 
         if currentProbe?.expectedExitIPMatched == false {
             return reconnectNeeded(
-                "Reconnect needed: connected through the wrong exit IP.",
+                L10n.string("Reconnect needed: connected through the wrong exit IP."),
                 evidence: [
-                    "Expected \(currentProbe?.expectedExitIP ?? "n/a").",
-                    "Observed \(currentProbe?.observedExitIP ?? "n/a")."
+                    L10n.string("Expected %@.", currentProbe?.expectedExitIP ?? L10n.string("n/a")),
+                    L10n.string("Observed %@.", currentProbe?.observedExitIP ?? L10n.string("n/a"))
                 ],
                 timeline: timeline
             )
@@ -174,28 +175,28 @@ enum TunnelHealthEvaluator {
 
         if arqExpiry > 0 {
             return reconnectNeeded(
-                "Reconnect needed: ARQ packets expired or exceeded retry limits.",
-                evidence: ["ARQ expiry count: \(arqExpiry)."],
+                L10n.string("Reconnect needed: ARQ packets expired or exceeded retry limits."),
+                evidence: [L10n.string("ARQ expiry count: %@.", "\(arqExpiry)")],
                 timeline: timeline
             )
         }
 
-        if arqRejects > 50 && arqRejectRatio >= 0.25 {
+        if arqQueueRejects > 50 && arqQueueRejectRatio >= 0.25 {
             return reconnectNeeded(
-                "Reconnect needed: ARQ rejects spiked.",
-                evidence: ["ARQ rejects: \(arqRejects), reject ratio: \(formatPercent(arqRejectRatio))."],
+                L10n.string("Reconnect needed: ARQ rejects spiked."),
+                evidence: [L10n.string("ARQ rejects: %@, reject ratio: %@.", "\(arqQueueRejects)", formatPercent(arqQueueRejectRatio))],
                 timeline: timeline
             )
         }
 
         if let currentProbe, allCriticalProbeChecksFailed(currentProbe), metrics.uptimeSeconds >= 5 {
             return reconnectNeeded(
-                "Reconnect needed: connected, but all critical probes failed.",
+                L10n.string("Reconnect needed: connected, but all critical probes failed."),
                 evidence: [
-                    "Public IP: \(currentProbe.publicIP.detail)",
-                    "1.1.1.1/help: \(currentProbe.directHTTPS.detail)",
-                    "Resolver: \(currentProbe.resolverReachability.detail)",
-                    "Handshake: \(currentProbe.tunnelHandshake.detail)"
+                    L10n.string("Public IP: %@", currentProbe.publicIP.detail),
+                    L10n.string("1.1.1.1/help: %@", currentProbe.directHTTPS.detail),
+                    L10n.string("Resolver: %@", currentProbe.resolverReachability.detail),
+                    L10n.string("Handshake: %@", currentProbe.tunnelHandshake.detail)
                 ],
                 timeline: timeline
             )
@@ -206,60 +207,63 @@ enum TunnelHealthEvaluator {
            let currentProbe,
            anyCriticalProbeCheckFailed(currentProbe) {
             return reconnectNeeded(
-                "Reconnect needed: no bridge packets are moving.",
+                L10n.string("Reconnect needed: no bridge packets are moving."),
                 evidence: [
-                    "Uptime is \(metrics.uptimeSeconds)s.",
-                    "Bridge packets are \(metrics.bridgeInputPackets) in / \(metrics.bridgeOutputPackets) out."
+                    L10n.string("Uptime is %@.", L10n.string("%ds", metrics.uptimeSeconds)),
+                    L10n.string("Bridge packets are %@ in / %@ out.", "\(metrics.bridgeInputPackets)", "\(metrics.bridgeOutputPackets)")
                 ],
                 timeline: timeline
             )
         }
 
         if metricsAge > 20 {
-            evidence.append("Metrics are \(Int(metricsAge))s old.")
+            evidence.append(L10n.string("Metrics are %@ old.", L10n.string("%ds", Int(metricsAge))))
         }
         if bridgeErrors > 0 {
-            evidence.append("Bridge errors: read \(metrics.bridgeReadErrors), write \(metrics.bridgeWriteErrors), short \(metrics.bridgeShortWrites).")
+            evidence.append(L10n.string("Bridge errors: read %@, write %@, short %@.", "\(metrics.bridgeReadErrors)", "\(metrics.bridgeWriteErrors)", "\(metrics.bridgeShortWrites)"))
         }
         if arqResends > 10 && arqResendRatio >= 0.15 {
-            evidence.append("ARQ resend ratio is \(formatPercent(arqResendRatio)) across \(arqResends) resends.")
+            evidence.append(L10n.string("ARQ resend ratio is %@ across %@ resends.", formatPercent(arqResendRatio), "\(arqResends)"))
         }
-        if arqRejects > 0 {
-            evidence.append("ARQ rejects: \(arqRejects).")
+        if arqQueueRejects > 0 {
+            evidence.append(L10n.string("ARQ rejects: %@.", "\(arqQueueRejects)"))
+        }
+        if arqAckRejects > 0 {
+            evidence.append(L10n.string("ARQ ACK rejects: %@.", "\(arqAckRejects)"))
         }
         if let currentProbe, anyProbeCheckFailed(currentProbe) {
-            evidence.append("One or more health probes failed.")
+            evidence.append(L10n.string("One or more health probes failed."))
         }
         if let currentProbe, currentProbe.dnsLeak.status == .warning {
             evidence.append(currentProbe.dnsLeak.detail)
         }
         if !trafficSeen, metrics.uptimeSeconds >= 15 {
-            evidence.append("No bridge packets have moved after \(metrics.uptimeSeconds)s.")
+            evidence.append(L10n.string("No bridge packets have moved after %@.", L10n.string("%ds", metrics.uptimeSeconds)))
         }
 
         if !evidence.isEmpty {
             return TunnelHealthReport(
                 verdict: .degraded,
-                summary: "Tunnel is connected, but health signals are degraded.",
+                summary: L10n.string("Tunnel is connected, but health signals are degraded."),
                 evidence: evidence,
                 timeline: timeline
             )
         }
 
         if let currentProbe, anyProbeCheckPassed(currentProbe) {
-            var workingEvidence = ["At least one health probe passed."]
+            var workingEvidence = [L10n.string("At least one health probe passed.")]
             if let observedIP = currentProbe.observedExitIP {
-                workingEvidence.append("Observed public IP: \(observedIP).")
+                workingEvidence.append(L10n.string("Observed public IP: %@.", observedIP))
             }
             if currentProbe.expectedExitIPMatched == true {
-                workingEvidence.append("Expected exit IP matched.")
+                workingEvidence.append(L10n.string("Expected exit IP matched."))
             }
             if !currentProbe.reportedDNSServers.isEmpty {
-                workingEvidence.append("DNS resolvers reported: \(currentProbe.reportedDNSServers.joined(separator: ", ")).")
+                workingEvidence.append(L10n.string("DNS resolvers reported: %@.", currentProbe.reportedDNSServers.joined(separator: ", ")))
             }
             return TunnelHealthReport(
                 verdict: .working,
-                summary: "VPN is connected and health checks are passing.",
+                summary: L10n.string("VPN is connected and health checks are passing."),
                 evidence: workingEvidence,
                 timeline: timeline
             )
@@ -268,16 +272,16 @@ enum TunnelHealthEvaluator {
         if trafficSeen {
             return TunnelHealthReport(
                 verdict: .waitingForTraffic,
-                summary: "Traffic is moving; run checks to verify exit IP.",
-                evidence: ["Transferred \(ByteCountFormatter.string(fromByteCount: Int64(metrics.totalBytes), countStyle: .binary))."],
+                summary: L10n.string("Traffic is moving; run checks to verify exit IP."),
+                evidence: [L10n.string("Transferred %@.", ByteCountFormatter.string(fromByteCount: Int64(metrics.totalBytes), countStyle: .binary))],
                 timeline: timeline
             )
         }
 
         return TunnelHealthReport(
             verdict: .waitingForTraffic,
-            summary: "Connected, waiting for traffic or health checks.",
-            evidence: ["Engine phase: \(metrics.phase)."],
+            summary: L10n.string("Connected, waiting for traffic or health checks."),
+            evidence: [L10n.string("Engine phase: %@.", metrics.phase)],
             timeline: timeline
         )
     }
@@ -286,7 +290,7 @@ enum TunnelHealthEvaluator {
         TunnelHealthReport(
             verdict: .reconnectNeeded,
             summary: summary,
-            evidence: evidence.isEmpty ? ["No extra error detail was available."] : evidence,
+            evidence: evidence.isEmpty ? [L10n.string("No extra error detail was available.")] : evidence,
             timeline: timeline
         )
     }
@@ -337,19 +341,148 @@ enum TunnelHealthEvaluator {
         ]
     }
 
-    private static func totalARQRejects(_ metrics: TunnelMetrics) -> UInt64 {
+    private static func totalARQQueueRejects(_ metrics: TunnelMetrics) -> UInt64 {
         [
             metrics.arqDataPacketsQueueRejected,
             metrics.arqDataResendsRejected,
             metrics.arqDataNackPacketsRejected,
-            metrics.arqDataAckPacketsRejected,
             metrics.arqControlPacketsQueueRejected,
             metrics.arqControlResendsRejected
         ].compactMap { $0 }.reduce(0, +)
     }
 
+    private static func disconnectedEvidence(vpnStatus: NEVPNStatus, metrics: TunnelMetrics?) -> [String] {
+        var evidence = [L10n.string("iOS status is %@.", vpnStatus.displayName)]
+        guard let metrics else {
+            return evidence
+        }
+
+        let metricsAge = max(0, Date().timeIntervalSince(metrics.updatedAt))
+        evidence.append(
+            L10n.string(
+                "Last extension metrics were %@ old: status=%@ phase=%@ engine=%@.",
+                formatSeconds(metricsAge),
+                metrics.status,
+                metrics.phase,
+                metrics.engineRunning == true ? L10n.string("running") : L10n.string("not running")
+            )
+        )
+
+        if let runtimeMode = metrics.runtimeMode {
+            evidence.append(
+                L10n.string(
+                    "Runtime path: %@ (%@).",
+                    runtimeMode,
+                    metrics.runtimeModeSource ?? L10n.string("unknown source")
+                )
+            )
+        }
+
+        if let heartbeatAt = metrics.providerHeartbeatAt {
+            let heartbeatAge = max(0, Date().timeIntervalSince(heartbeatAt))
+            evidence.append(L10n.string("Provider heartbeat age: %@.", formatSeconds(heartbeatAge)))
+        }
+
+        if let reasonName = metrics.providerStopReasonName {
+            evidence.append(
+                L10n.string(
+                    "Provider stop reason: %@ (%@).",
+                    reasonName,
+                    metrics.providerStopReasonRaw.map(String.init) ?? L10n.string("n/a")
+                )
+            )
+        } else if metrics.status == "running", metrics.engineRunning == true, metricsAge >= 3 {
+            evidence.append(
+                L10n.string(
+                    "No provider stop reason was recorded before iOS disconnected; check device logs for extension crash, jetsam, or NetworkExtension termination."
+                )
+            )
+            // Tunnel extensions are killed at roughly 50 MB footprint; a high
+            // final reading makes a memory kill the most likely explanation.
+            if let footprint = metrics.memoryPhysicalFootprintBytes, footprint > 38 << 20 {
+                evidence.append(
+                    L10n.string(
+                        "Last memory footprint was %@ — the extension was likely killed for approaching the ~50 MB memory limit during high traffic.",
+                        ByteCountFormatter.string(fromByteCount: Int64(footprint), countStyle: .binary)
+                    )
+                )
+            }
+        }
+
+        if let exitCode = metrics.hevExitCode {
+            evidence.append(L10n.string("HEV runner exit code: %@.", "\(exitCode)"))
+        }
+        if let packetBridgeExitCode = metrics.packetBridgeExitCode {
+            evidence.append(L10n.string("Packet bridge exit code: %@.", "\(packetBridgeExitCode)"))
+        }
+
+        let nativeEngineWriteErrors = metrics.nativePacketWriteErrors ?? 0
+        let nativeFlowWriteFailures = metrics.nativePacketFlowWriteFailures ?? 0
+        let nativeInvalidOutputPackets = metrics.nativePacketFlowInvalidOutputPackets ?? 0
+        if nativeEngineWriteErrors > 0 || nativeFlowWriteFailures > 0 || nativeInvalidOutputPackets > 0 {
+            evidence.append(
+                L10n.string(
+                    "Native packet output issues: engine writes %@; packet-flow rejects %@; invalid output %@.",
+                    "\(nativeEngineWriteErrors)",
+                    "\(nativeFlowWriteFailures)",
+                    "\(nativeInvalidOutputPackets)"
+                )
+            )
+        }
+        let nativeTCPEndpointErrors = metrics.nativeTCPEndpointErrors ?? 0
+        let nativeTCPEndpointResets = metrics.nativeTCPEndpointResets ?? 0
+        if nativeTCPEndpointErrors > 0 || nativeTCPEndpointResets > 0 {
+            evidence.append(
+                L10n.string(
+                    "Native TCP endpoint issues: errors %@; resets %@.",
+                    "\(nativeTCPEndpointErrors)",
+                    "\(nativeTCPEndpointResets)"
+                )
+            )
+        }
+        if let unsupportedUDP = metrics.nativeUnsupportedUDP, unsupportedUDP > 0 {
+            let rejectedUDP = metrics.nativeUnsupportedUDPRejects ?? 0
+            if let topPorts = metrics.nativeUnsupportedUDPTopPorts, !topPorts.isEmpty {
+                evidence.append(
+                    L10n.string(
+                        "Native packet unsupported UDP packets: %@; rejected %@; top ports %@.",
+                        "\(unsupportedUDP)",
+                        "\(rejectedUDP)",
+                        topPorts
+                    )
+                )
+            } else {
+                evidence.append(L10n.string("Native packet unsupported UDP packets: %@; rejected %@.", "\(unsupportedUDP)", "\(rejectedUDP)"))
+            }
+        }
+
+        let arqAckRejects = metrics.arqDataAckPacketsRejected ?? 0
+        let arqQueueRejects = totalARQQueueRejects(metrics)
+        if arqAckRejects > 0 || arqQueueRejects > 0 {
+            evidence.append(
+                L10n.string(
+                    "ARQ queue rejects: %@; ACK enqueue suppressions: %@.",
+                    "\(arqQueueRejects)",
+                    "\(arqAckRejects)"
+                )
+            )
+        }
+
+        if let residentBytes = metrics.memoryResidentBytes {
+            evidence.append(L10n.string("Last provider RSS: %@.", ByteCountFormatter.string(fromByteCount: Int64(residentBytes), countStyle: .binary)))
+        }
+        return evidence
+    }
+
     private static func formatPercent(_ value: Double) -> String {
         String(format: "%.1f%%", value * 100)
+    }
+
+    private static func formatSeconds(_ value: TimeInterval) -> String {
+        if value < 10 {
+            return String(format: "%.1fs", value)
+        }
+        return "\(Int(value.rounded()))s"
     }
 
     private static func timelineEvents(
@@ -375,8 +508,8 @@ enum TunnelHealthEvaluator {
         if let firstBridgeInputAt = metrics?.firstBridgeInputAt {
             events.append(HealthTimelineEvent(
                 date: firstBridgeInputAt,
-                title: "First packet in",
-                detail: "First packet from iOS apps reached the packet bridge.",
+                title: L10n.string("First packet in"),
+                detail: L10n.string("First packet from iOS apps reached the packet bridge."),
                 severity: .success
             ))
         }
@@ -384,8 +517,8 @@ enum TunnelHealthEvaluator {
         if let firstBridgeOutputAt = metrics?.firstBridgeOutputAt {
             events.append(HealthTimelineEvent(
                 date: firstBridgeOutputAt,
-                title: "First packet out",
-                detail: "First packet from the packet bridge was returned to iOS.",
+                title: L10n.string("First packet out"),
+                detail: L10n.string("First packet from the packet bridge was returned to iOS."),
                 severity: .success
             ))
         }
@@ -393,8 +526,8 @@ enum TunnelHealthEvaluator {
         if let metrics, metrics.totalBytes > 0 || metrics.bridgeInputPackets > 0 || metrics.bridgeOutputPackets > 0 {
             events.append(HealthTimelineEvent(
                 date: metrics.updatedAt,
-                title: "Traffic observed",
-                detail: "\(metrics.uploadPackets) up / \(metrics.downloadPackets) down packets",
+                title: L10n.string("Traffic observed"),
+                detail: L10n.string("%@ up / %@ down packets", "\(metrics.uploadPackets)", "\(metrics.downloadPackets)"),
                 severity: .success
             ))
         }
@@ -403,7 +536,7 @@ enum TunnelHealthEvaluator {
             if probe.publicIP.status == .passed, let checkedAt = probe.publicIP.checkedAt {
                 events.append(HealthTimelineEvent(
                     date: checkedAt,
-                    title: "Public IP probe passed",
+                    title: L10n.string("Public IP probe passed"),
                     detail: probe.publicIP.detail,
                     severity: .success
                 ))
@@ -411,8 +544,15 @@ enum TunnelHealthEvaluator {
 
             events.append(HealthTimelineEvent(
                 date: probe.updatedAt,
-                title: "Health checks updated",
-                detail: "Public IP \(probe.publicIP.status.rawValue), DNS leak \(probe.dnsLeak.status.rawValue), 1.1.1.1 \(probe.directHTTPS.status.rawValue), resolver \(probe.resolverReachability.status.rawValue), handshake \(probe.tunnelHandshake.status.rawValue)",
+                title: L10n.string("Health checks updated"),
+                detail: L10n.string(
+                    "Public IP %@, DNS leak %@, 1.1.1.1 %@, resolver %@, handshake %@",
+                    L10n.string(probe.publicIP.status.rawValue),
+                    L10n.string(probe.dnsLeak.status.rawValue),
+                    L10n.string(probe.directHTTPS.status.rawValue),
+                    L10n.string(probe.resolverReachability.status.rawValue),
+                    L10n.string(probe.tunnelHandshake.status.rawValue)
+                ),
                 severity: allCriticalProbeChecksFailed(probe) ? .failure : .success
             ))
         }
@@ -424,53 +564,62 @@ enum TunnelHealthEvaluator {
 
     private static func timelineEvent(message: String, date: Date?) -> HealthTimelineEvent? {
         let lower = message.lowercased()
-        if lower.contains("traffic(packet-flow)") {
+        if lower.contains("traffic(packet-flow)") || lower.contains("(packet-flow):") {
             return nil
         }
         if lower.contains("health checks updated") || lower.contains("health checks completed") {
             return nil
         }
         if lower.contains("no buffer space available") {
-            return HealthTimelineEvent(date: date, title: "Bridge backpressure", detail: message, severity: .warning)
+            return HealthTimelineEvent(date: date, title: L10n.string("Bridge backpressure"), detail: message, severity: .warning)
         }
         if lower.contains("app connect requested") {
-            return HealthTimelineEvent(date: date, title: "Connect tapped", detail: message, severity: .success)
+            return HealthTimelineEvent(date: date, title: L10n.string("Connect tapped"), detail: message, severity: .success)
         }
         if lower.contains("app selected profile") {
-            return HealthTimelineEvent(date: date, title: "Profile selected", detail: message, severity: .success)
+            return HealthTimelineEvent(date: date, title: L10n.string("Profile selected"), detail: message, severity: .success)
         }
         if lower.contains("app starting vpn tunnel") {
-            return HealthTimelineEvent(date: date, title: "VPN start requested", detail: message, severity: .success)
+            return HealthTimelineEvent(date: date, title: L10n.string("VPN start requested"), detail: message, severity: .success)
         }
         if lower.contains("app vpn status changed") {
-            return HealthTimelineEvent(date: date, title: "iOS status changed", detail: message, severity: .success)
+            return HealthTimelineEvent(date: date, title: L10n.string("iOS status changed"), detail: message, severity: .success)
         }
         if lower.contains("starting tunnel") {
-            return HealthTimelineEvent(date: date, title: "Extension started", detail: message, severity: .success)
+            return HealthTimelineEvent(date: date, title: L10n.string("Extension started"), detail: message, severity: .success)
         }
         if lower.contains("network settings applied") {
-            return HealthTimelineEvent(date: date, title: "Network settings applied", detail: message, severity: .success)
+            return HealthTimelineEvent(date: date, title: L10n.string("Network settings applied"), detail: message, severity: .success)
         }
         if lower.contains("applying network settings") {
             return nil
         }
         if lower.contains("starting masterdnsvpn") || lower.contains("starting vaydns") {
-            return HealthTimelineEvent(date: date, title: "Engine starting", detail: message, severity: .success)
+            return HealthTimelineEvent(date: date, title: L10n.string("Engine starting"), detail: message, severity: .success)
         }
         if lower.contains("engine started") {
-            return HealthTimelineEvent(date: date, title: "Engine running", detail: message, severity: .success)
+            return HealthTimelineEvent(date: date, title: L10n.string("Engine running"), detail: message, severity: .success)
         }
         if lower.contains("hev") && lower.contains("bridge created") {
-            return HealthTimelineEvent(date: date, title: "Packet bridge created", detail: message, severity: .success)
+            return HealthTimelineEvent(date: date, title: L10n.string("Packet bridge created"), detail: message, severity: .success)
         }
         if lower.contains("hevsocks5tunnel started") {
-            return HealthTimelineEvent(date: date, title: "Hev started", detail: message, severity: .success)
+            return HealthTimelineEvent(date: date, title: L10n.string("Hev started"), detail: message, severity: .success)
+        }
+        if lower.contains("hevsocks5tunnel exited") {
+            return HealthTimelineEvent(date: date, title: L10n.string("Hev exited"), detail: message, severity: .failure)
+        }
+        if lower.contains("packet bridge exited") {
+            return HealthTimelineEvent(date: date, title: L10n.string("Packet bridge exited"), detail: message, severity: .failure)
+        }
+        if lower.contains("provider stop completed") {
+            return HealthTimelineEvent(date: date, title: L10n.string("Provider stopped"), detail: message, severity: .warning)
         }
         if lower.contains("stopping tunnel") || lower.contains("disconnect requested") {
-            return HealthTimelineEvent(date: date, title: "Disconnect", detail: message, severity: .warning)
+            return HealthTimelineEvent(date: date, title: L10n.string("Disconnect"), detail: message, severity: .warning)
         }
         if lower.contains("failed") || lower.contains("error") {
-            return HealthTimelineEvent(date: date, title: "Failure", detail: message, severity: .failure)
+            return HealthTimelineEvent(date: date, title: L10n.string("Failure"), detail: message, severity: .failure)
         }
         return nil
     }
@@ -488,15 +637,15 @@ enum HealthProbeKind: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .publicIP:
-            return "Check Public IP"
+            return L10n.string("Check Public IP")
         case .dnsLeak:
-            return "Check DNS Leak"
+            return L10n.string("Check DNS Leak")
         case .directHTTPS:
-            return "Check 1.1.1.1/help"
+            return L10n.string("Check 1.1.1.1/help")
         case .resolverReachability:
-            return "Check Resolver"
+            return L10n.string("Check Resolver")
         case .tunnelHandshake:
-            return "Check Handshake"
+            return L10n.string("Check Handshake")
         }
     }
 
@@ -661,7 +810,7 @@ enum HealthProbeRunner {
         var snapshot = baseSnapshot(profile: profile, trigger: trigger, startedAt: startedAt, previous: previous)
 
         guard vpnStatus == .connected else {
-            let skipped = skipped("Unavailable because tunnel is \(vpnStatus.displayName)", at: startedAt)
+            let skipped = skipped(L10n.string("Unavailable because tunnel is %@", vpnStatus.displayName), at: startedAt)
             snapshot.publicIP = skipped
             snapshot.dnsLeak = skipped
             snapshot.directHTTPS = skipped
@@ -680,12 +829,12 @@ enum HealthProbeRunner {
         async let directHTTPS = httpCheck(
             session: session,
             url: URL(string: "https://1.1.1.1/help")!,
-            successDetail: "1.1.1.1/help reachable"
+            successDetail: L10n.string("1.1.1.1/help reachable")
         )
         async let hostnameHTTPS = httpCheck(
             session: session,
             url: URL(string: "https://www.apple.com/library/test/success.html")!,
-            successDetail: "Hostname HTTPS reachable"
+            successDetail: L10n.string("Hostname HTTPS reachable")
         )
         async let resolverReachability = resolverReachabilityCheck(profile: profile, metrics: metrics, session: session)
         let tunnelHandshake = tunnelHandshakeCheck(profile: profile, metrics: metrics)
@@ -716,7 +865,7 @@ enum HealthProbeRunner {
         var snapshot = baseSnapshot(profile: profile, trigger: trigger, startedAt: startedAt, previous: previous)
 
         guard vpnStatus == .connected else {
-            let skipped = skipped("Unavailable because tunnel is \(vpnStatus.displayName)", at: startedAt)
+            let skipped = skipped(L10n.string("Unavailable because tunnel is %@", vpnStatus.displayName), at: startedAt)
             snapshot.publicIP = skipped
             snapshot.dnsLeak = skipped
             snapshot.directHTTPS = skipped
@@ -736,7 +885,7 @@ enum HealthProbeRunner {
         snapshot.expectedExitIPMatched = exitIPMatched(expected: profile.expectedExitIP, observed: observedIP)
         snapshot.resolverReachability = await resolverReachabilityCheck(profile: profile, metrics: metrics, session: session)
         snapshot.tunnelHandshake = tunnelHandshakeCheck(profile: profile, metrics: metrics)
-        let skipped = skipped("Skipped during lightweight startup check", at: startedAt)
+        let skipped = skipped(L10n.string("Skipped during lightweight startup check"), at: startedAt)
         snapshot.dnsLeak = skipped
         snapshot.directHTTPS = skipped
         snapshot.hostnameHTTPS = skipped
@@ -755,7 +904,7 @@ enum HealthProbeRunner {
         var snapshot = baseSnapshot(profile: profile, trigger: "manual-\(kind.rawValue)", startedAt: startedAt, previous: previous)
 
         guard vpnStatus == .connected else {
-            let check = skipped("Unavailable because tunnel is \(vpnStatus.displayName)", at: startedAt)
+            let check = skipped(L10n.string("Unavailable because tunnel is %@", vpnStatus.displayName), at: startedAt)
             apply(check: check, kind: kind, to: &snapshot)
             snapshot.updatedAt = startedAt
             return snapshot
@@ -778,7 +927,7 @@ enum HealthProbeRunner {
             snapshot.directHTTPS = await httpCheck(
                 session: session,
                 url: URL(string: "https://1.1.1.1/help")!,
-                successDetail: "1.1.1.1/help reachable"
+                successDetail: L10n.string("1.1.1.1/help reachable")
             )
         case .resolverReachability:
             snapshot.resolverReachability = await resolverReachabilityCheck(profile: profile, metrics: metrics, session: session)
@@ -846,14 +995,14 @@ enum HealthProbeRunner {
             let (data, response) = try await session.data(for: request)
             let duration = milliseconds(since: startedAt)
             guard let http = response as? HTTPURLResponse else {
-                return (failed("Public IP response was not HTTP", duration: duration, statusCode: nil), nil)
+                return (failed(L10n.string("Public IP response was not HTTP"), duration: duration, statusCode: nil), nil)
             }
             guard (200..<300).contains(http.statusCode) else {
-                return (failed("Public IP check returned HTTP \(http.statusCode)", duration: duration, statusCode: http.statusCode), nil)
+                return (failed(L10n.string("Public IP check returned HTTP %@", "\(http.statusCode)"), duration: duration, statusCode: http.statusCode), nil)
             }
             let decoded = try JSONDecoder().decode(PublicIPResponse.self, from: data)
             guard !decoded.ip.isEmpty else {
-                return (failed("Public IP response did not include an IP", duration: duration, statusCode: http.statusCode), nil)
+                return (failed(L10n.string("Public IP response did not include an IP"), duration: duration, statusCode: http.statusCode), nil)
             }
             return (
                 HealthProbeCheck(
@@ -861,7 +1010,7 @@ enum HealthProbeRunner {
                     checkedAt: Date(),
                     durationMilliseconds: duration,
                     statusCode: http.statusCode,
-                    detail: "Observed \(decoded.ip)"
+                    detail: L10n.string("Observed %@", decoded.ip)
                 ),
                 decoded.ip
             )
@@ -881,10 +1030,10 @@ enum HealthProbeRunner {
             let (data, response) = try await session.data(for: request)
             let duration = milliseconds(since: startedAt)
             guard let http = response as? HTTPURLResponse else {
-                return (failed("DNS leak response was not HTTP", duration: duration, statusCode: nil), [])
+                return (failed(L10n.string("DNS leak response was not HTTP"), duration: duration, statusCode: nil), [])
             }
             guard (200..<300).contains(http.statusCode) else {
-                return (failed("DNS leak check returned HTTP \(http.statusCode)", duration: duration, statusCode: http.statusCode), [])
+                return (failed(L10n.string("DNS leak check returned HTTP %@", "\(http.statusCode)"), duration: duration, statusCode: http.statusCode), [])
             }
 
             let reportedServers = extractDNSResolverIPs(from: data)
@@ -895,7 +1044,7 @@ enum HealthProbeRunner {
                         checkedAt: Date(),
                         durationMilliseconds: duration,
                         statusCode: http.statusCode,
-                        detail: "DNS leak endpoint answered, but no resolver IPs were reported"
+                        detail: L10n.string("DNS leak endpoint answered, but no resolver IPs were reported")
                     ),
                     []
                 )
@@ -909,7 +1058,7 @@ enum HealthProbeRunner {
                         checkedAt: Date(),
                         durationMilliseconds: duration,
                         statusCode: http.statusCode,
-                        detail: "Reported DNS resolvers: \(reportedServers.joined(separator: ", ")); configure expectedDNSServers for pass/fail"
+                        detail: L10n.string("Reported DNS resolvers: %@; configure expectedDNSServers for pass/fail", reportedServers.joined(separator: ", "))
                     ),
                     reportedServers
                 )
@@ -923,7 +1072,7 @@ enum HealthProbeRunner {
                         checkedAt: Date(),
                         durationMilliseconds: duration,
                         statusCode: http.statusCode,
-                        detail: "Reported DNS resolvers matched expected set: \(reportedServers.joined(separator: ", "))"
+                        detail: L10n.string("Reported DNS resolvers matched expected set: %@", reportedServers.joined(separator: ", "))
                     ),
                     reportedServers
                 )
@@ -931,7 +1080,7 @@ enum HealthProbeRunner {
 
             return (
                 failed(
-                    "Unexpected DNS resolvers: \(unexpected.joined(separator: ", ")); reported \(reportedServers.joined(separator: ", "))",
+                    L10n.string("Unexpected DNS resolvers: %@; reported %@", unexpected.joined(separator: ", "), reportedServers.joined(separator: ", ")),
                     duration: duration,
                     statusCode: http.statusCode
                 ),
@@ -949,10 +1098,10 @@ enum HealthProbeRunner {
             let (_, response) = try await session.data(for: request)
             let duration = milliseconds(since: startedAt)
             guard let http = response as? HTTPURLResponse else {
-                return failed("Response was not HTTP", duration: duration, statusCode: nil)
+                return failed(L10n.string("Response was not HTTP"), duration: duration, statusCode: nil)
             }
             guard (200..<400).contains(http.statusCode) else {
-                return failed("HTTP \(http.statusCode)", duration: duration, statusCode: http.statusCode)
+                return failed(L10n.string("HTTP %@", "\(http.statusCode)"), duration: duration, statusCode: http.statusCode)
             }
             return HealthProbeCheck(
                 status: .passed,
@@ -973,12 +1122,12 @@ enum HealthProbeRunner {
     ) async -> HealthProbeCheck {
         let startedAt = Date()
         guard let resolver = profile.resolvers.first else {
-            return failed("Profile has no resolver", duration: 0, statusCode: nil)
+            return failed(L10n.string("Profile has no resolver"), duration: 0, statusCode: nil)
         }
 
         if profile.tunnelProtocol == .masterdns {
             guard let metrics else {
-                return HealthProbeCheck.notRun("Waiting for MasterDnsVPN engine metrics")
+                return HealthProbeCheck.notRun(L10n.string("Waiting for MasterDnsVPN engine metrics"))
             }
             let age = Int(Date().timeIntervalSince(metrics.updatedAt))
             if (metrics.acceptedResolvers ?? 0) > 0 {
@@ -987,17 +1136,17 @@ enum HealthProbeRunner {
                     checkedAt: Date(),
                     durationMilliseconds: milliseconds(since: startedAt),
                     statusCode: nil,
-                    detail: "Engine accepted resolver \(metrics.resolverAddress ?? resolver.address) \(age)s ago"
+                    detail: L10n.string("Engine accepted resolver %@ %@ ago", metrics.resolverAddress ?? resolver.address, L10n.string("%ds", age))
                 )
             }
             if (metrics.rejectedResolvers ?? 0) > 0 {
                 return failed(
-                    "Engine rejected \(metrics.rejectedResolvers ?? 0) resolver(s); last resolver \(metrics.resolverAddress ?? resolver.address)",
+                    L10n.string("Engine rejected %@ resolver(s); last resolver %@", "\(metrics.rejectedResolvers ?? 0)", metrics.resolverAddress ?? resolver.address),
                     duration: milliseconds(since: startedAt),
                     statusCode: nil
                 )
             }
-            return HealthProbeCheck.notRun("Waiting for MasterDnsVPN MTU results for \(metrics.resolverAddress ?? resolver.address)")
+            return HealthProbeCheck.notRun(L10n.string("Waiting for MasterDnsVPN MTU results for %@", metrics.resolverAddress ?? resolver.address))
         }
 
         let query = dnsQueryData(hostname: "example.com", recordType: 1)
@@ -1007,41 +1156,41 @@ enum HealthProbeRunner {
             return await udpDNSProbe(host: parsed.host, port: parsed.port, query: query, startedAt: startedAt)
         case "doh":
             guard let url = dohURL(for: resolver.address) else {
-                return failed("Invalid DoH resolver URL: \(resolver.address)", duration: milliseconds(since: startedAt), statusCode: nil)
+                return failed(L10n.string("Invalid DoH resolver URL: %@", resolver.address), duration: milliseconds(since: startedAt), statusCode: nil)
             }
             return await dohDNSProbe(url: url, query: query, session: session, startedAt: startedAt)
         case "dot":
             let parsed = parseResolverAddress(resolver.address, defaultPort: 853)
             return await dotDNSProbe(host: parsed.host, port: parsed.port, query: query, startedAt: startedAt)
         default:
-            return failed("Unsupported resolver type: \(resolver.type)", duration: milliseconds(since: startedAt), statusCode: nil)
+            return failed(L10n.string("Unsupported resolver type: %@", resolver.type), duration: milliseconds(since: startedAt), statusCode: nil)
         }
     }
 
     private static func tunnelHandshakeCheck(profile: VPNProfile, metrics: TunnelMetrics?) -> HealthProbeCheck {
         let startedAt = Date()
         guard let metrics else {
-            return failed("No extension metrics are available yet", duration: milliseconds(since: startedAt), statusCode: nil)
+            return failed(L10n.string("No extension metrics are available yet"), duration: milliseconds(since: startedAt), statusCode: nil)
         }
         if metrics.status == "failed" {
-            return failed("Extension status is failed: \(metrics.lastError ?? metrics.lastLogLine ?? "no detail")", duration: milliseconds(since: startedAt), statusCode: nil)
+            return failed(L10n.string("Extension status is failed: %@", metrics.lastError ?? metrics.lastLogLine ?? L10n.string("no detail")), duration: milliseconds(since: startedAt), statusCode: nil)
         }
         if metrics.engineRunning == false {
-            return failed("Engine is not running", duration: milliseconds(since: startedAt), statusCode: nil)
+            return failed(L10n.string("Engine is not running"), duration: milliseconds(since: startedAt), statusCode: nil)
         }
         if profile.tunnelProtocol == .masterdns, metrics.sessionID == nil {
-            return failed("MasterDnsVPN session ID is not available yet", duration: milliseconds(since: startedAt), statusCode: nil)
+            return failed(L10n.string("MasterDnsVPN session ID is not available yet"), duration: milliseconds(since: startedAt), statusCode: nil)
         }
         if profile.tunnelProtocol == .masterdns, metrics.acceptedResolvers == 0 {
-            return failed("MasterDnsVPN did not accept any resolver", duration: milliseconds(since: startedAt), statusCode: nil)
+            return failed(L10n.string("MasterDnsVPN did not accept any resolver"), duration: milliseconds(since: startedAt), statusCode: nil)
         }
 
-        var detail = "Extension \(metrics.status), phase \(metrics.phase)"
+        var detail = L10n.string("Extension %@, phase %@", metrics.status, metrics.phase)
         if let sessionID = metrics.sessionID {
-            detail += ", session \(sessionID)"
+            detail += L10n.string(", session %@", "\(sessionID)")
         }
         if let acceptedResolvers = metrics.acceptedResolvers {
-            detail += ", accepted resolvers \(acceptedResolvers)"
+            detail += L10n.string(", accepted resolvers %@", "\(acceptedResolvers)")
         }
         return HealthProbeCheck(
             status: .passed,
@@ -1067,20 +1216,20 @@ enum HealthProbeRunner {
             let (data, response) = try await session.data(for: request)
             let duration = milliseconds(since: startedAt)
             guard let http = response as? HTTPURLResponse else {
-                return failed("DoH response was not HTTP", duration: duration, statusCode: nil)
+                return failed(L10n.string("DoH response was not HTTP"), duration: duration, statusCode: nil)
             }
             guard (200..<300).contains(http.statusCode) else {
-                return failed("DoH resolver returned HTTP \(http.statusCode)", duration: duration, statusCode: http.statusCode)
+                return failed(L10n.string("DoH resolver returned HTTP %@", "\(http.statusCode)"), duration: duration, statusCode: http.statusCode)
             }
             guard data.count >= 12 else {
-                return failed("DoH resolver returned a short DNS response", duration: duration, statusCode: http.statusCode)
+                return failed(L10n.string("DoH resolver returned a short DNS response"), duration: duration, statusCode: http.statusCode)
             }
             return HealthProbeCheck(
                 status: .passed,
                 checkedAt: Date(),
                 durationMilliseconds: duration,
                 statusCode: http.statusCode,
-                detail: "DoH resolver answered \(data.count) bytes"
+                detail: L10n.string("DoH resolver answered %@ bytes", "\(data.count)")
             )
         } catch {
             return failed(error.localizedDescription, duration: milliseconds(since: startedAt), statusCode: nil)
@@ -1094,7 +1243,7 @@ enum HealthProbeRunner {
         startedAt: Date
     ) async -> HealthProbeCheck {
         guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
-            return failed("Invalid UDP resolver port \(port)", duration: milliseconds(since: startedAt), statusCode: nil)
+            return failed(L10n.string("Invalid UDP resolver port %@", "\(port)"), duration: milliseconds(since: startedAt), statusCode: nil)
         }
 
         return await withCheckedContinuation { continuation in
@@ -1104,7 +1253,7 @@ enum HealthProbeRunner {
             let timeout = DispatchWorkItem {
                 oneShot.run {
                     connection.cancel()
-                    continuation.resume(returning: failed("UDP resolver timed out at \(host):\(port)", duration: milliseconds(since: startedAt), statusCode: nil))
+                    continuation.resume(returning: failed(L10n.string("UDP resolver timed out at %@:%@", host, "\(port)"), duration: milliseconds(since: startedAt), statusCode: nil))
                 }
             }
 
@@ -1131,7 +1280,7 @@ enum HealthProbeRunner {
                                 return
                             }
                             guard let data, data.count >= 12 else {
-                                finish(failed("UDP resolver returned no DNS response", duration: milliseconds(since: startedAt), statusCode: nil))
+                                finish(failed(L10n.string("UDP resolver returned no DNS response"), duration: milliseconds(since: startedAt), statusCode: nil))
                                 return
                             }
                             finish(HealthProbeCheck(
@@ -1139,7 +1288,7 @@ enum HealthProbeRunner {
                                 checkedAt: Date(),
                                 durationMilliseconds: milliseconds(since: startedAt),
                                 statusCode: nil,
-                                detail: "UDP resolver \(host):\(port) answered \(data.count) bytes"
+                                detail: L10n.string("UDP resolver %@:%@ answered %@ bytes", host, "\(port)", "\(data.count)")
                             ))
                         }
                     })
@@ -1162,7 +1311,7 @@ enum HealthProbeRunner {
         startedAt: Date
     ) async -> HealthProbeCheck {
         guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
-            return failed("Invalid DoT resolver port \(port)", duration: milliseconds(since: startedAt), statusCode: nil)
+            return failed(L10n.string("Invalid DoT resolver port %@", "\(port)"), duration: milliseconds(since: startedAt), statusCode: nil)
         }
 
         var framedQuery = Data()
@@ -1177,7 +1326,7 @@ enum HealthProbeRunner {
             let timeout = DispatchWorkItem {
                 oneShot.run {
                     connection.cancel()
-                    continuation.resume(returning: failed("DoT resolver timed out at \(host):\(port)", duration: milliseconds(since: startedAt), statusCode: nil))
+                    continuation.resume(returning: failed(L10n.string("DoT resolver timed out at %@:%@", host, "\(port)"), duration: milliseconds(since: startedAt), statusCode: nil))
                 }
             }
 
@@ -1204,7 +1353,7 @@ enum HealthProbeRunner {
                                 return
                             }
                             guard let prefix, prefix.count == 2 else {
-                                finish(failed("DoT resolver returned no length prefix", duration: milliseconds(since: startedAt), statusCode: nil))
+                                finish(failed(L10n.string("DoT resolver returned no length prefix"), duration: milliseconds(since: startedAt), statusCode: nil))
                                 return
                             }
                             let responseLength = Int(prefix[prefix.startIndex]) << 8 | Int(prefix[prefix.index(after: prefix.startIndex)])
@@ -1214,7 +1363,7 @@ enum HealthProbeRunner {
                                     return
                                 }
                                 guard let response, response.count >= 12 else {
-                                    finish(failed("DoT resolver returned a short DNS response", duration: milliseconds(since: startedAt), statusCode: nil))
+                                    finish(failed(L10n.string("DoT resolver returned a short DNS response"), duration: milliseconds(since: startedAt), statusCode: nil))
                                     return
                                 }
                                 finish(HealthProbeCheck(
@@ -1222,7 +1371,7 @@ enum HealthProbeRunner {
                                     checkedAt: Date(),
                                     durationMilliseconds: milliseconds(since: startedAt),
                                     statusCode: nil,
-                                    detail: "DoT resolver \(host):\(port) answered \(response.count) bytes"
+                                    detail: L10n.string("DoT resolver %@:%@ answered %@ bytes", host, "\(port)", "\(response.count)")
                                 ))
                             }
                         }
@@ -1529,6 +1678,23 @@ private struct DiagnosticMetricsSummary: Encodable {
     var startedAt: Date?
     var updatedAt: Date
     var uptimeSeconds: Int
+    var providerStartedAt: Date?
+    var providerHeartbeatAt: Date?
+    var providerLastTelemetryWriteAt: Date?
+    var providerStoppingAt: Date?
+    var providerStoppedAt: Date?
+    var providerStopReasonRaw: Int?
+    var providerStopReasonName: String?
+    var providerLastLifecycleEvent: String?
+    var hevRunning: Bool?
+    var hevExitCode: Int?
+    var hevExitedAt: Date?
+    var packetBridgeExitedAt: Date?
+    var packetBridgeExitCode: Int?
+    var memoryResidentBytes: UInt64?
+    var memoryPhysicalFootprintBytes: UInt64?
+    var threadCount: Int?
+    var openFileDescriptorCount: Int?
     var resolverAddress: String?
     var sessionID: Int?
     var uploadMTU: Int?
@@ -1608,6 +1774,23 @@ private struct DiagnosticMetricsSummary: Encodable {
         startedAt = metrics.startedAt
         updatedAt = metrics.updatedAt
         uptimeSeconds = metrics.uptimeSeconds
+        providerStartedAt = metrics.providerStartedAt
+        providerHeartbeatAt = metrics.providerHeartbeatAt
+        providerLastTelemetryWriteAt = metrics.providerLastTelemetryWriteAt
+        providerStoppingAt = metrics.providerStoppingAt
+        providerStoppedAt = metrics.providerStoppedAt
+        providerStopReasonRaw = metrics.providerStopReasonRaw
+        providerStopReasonName = metrics.providerStopReasonName
+        providerLastLifecycleEvent = metrics.providerLastLifecycleEvent
+        hevRunning = metrics.hevRunning
+        hevExitCode = metrics.hevExitCode
+        hevExitedAt = metrics.hevExitedAt
+        packetBridgeExitedAt = metrics.packetBridgeExitedAt
+        packetBridgeExitCode = metrics.packetBridgeExitCode
+        memoryResidentBytes = metrics.memoryResidentBytes
+        memoryPhysicalFootprintBytes = metrics.memoryPhysicalFootprintBytes
+        threadCount = metrics.threadCount
+        openFileDescriptorCount = metrics.openFileDescriptorCount
         resolverAddress = metrics.resolverAddress
         sessionID = metrics.sessionID
         uploadMTU = metrics.uploadMTU
