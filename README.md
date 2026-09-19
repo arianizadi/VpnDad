@@ -1,5 +1,7 @@
 # VpnDad iOS
 
+https://www.ariandev.com/blog/6a1efe491c8dad50dbcf396d
+
 VpnDad is an iPhone VPN app for testing `masterdns` and `vaydns` DNS tunnel
 profiles with a simple import, connect, and health-check flow.
 
