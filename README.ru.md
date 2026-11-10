@@ -153,8 +153,8 @@ git tag stable-1.0.0
 git push origin stable-1.0.0
 ```
 
-Workflow checks out это приложение, custom fork `arianizadi/MasterDnsVPN`, а
-также sibling dependencies `vaydns` и `raptorq`. Он пересобирает generated
+Workflow checks out это приложение и custom fork `arianizadi/MasterDnsVPN`,
+в котором уже есть vendored `vaydns` и gVisor. Он пересобирает generated
 XCFrameworks, собирает `VpnDad.app` для `iphoneos` с disabled code signing,
 упаковывает `Payload/VpnDad.app`, загружает artifact с именем вроде
 `VpnDad-stable-1.0.0-unsigned.ipa` и загружает тот же IPA в matching GitHub

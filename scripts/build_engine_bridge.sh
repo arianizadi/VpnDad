@@ -2,8 +2,10 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
-OUT_DIR="$ROOT_DIR/iOS/Vendor"
+APP_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+ROOT_DIR=$(CDPATH= cd -- "$APP_DIR/.." && pwd)
+# Vendor/ lives in this checkout whatever the directory is called.
+OUT_DIR="$APP_DIR/Vendor"
 OUT="$OUT_DIR/EngineBridge.xcframework"
 
 GOMOBILE=$(command -v gomobile || true)

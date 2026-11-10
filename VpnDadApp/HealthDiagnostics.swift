@@ -498,10 +498,12 @@ enum TunnelHealthEvaluator {
             guard pieces.count == 2 else {
                 continue
             }
-            let date = formatter.date(from: pieces[0])
-            guard let event = timelineEvent(message: pieces[1], date: date) else {
+            // Most lines are not timeline events; classify first and only
+            // pay for ISO-8601 parsing on the few that are.
+            guard var event = timelineEvent(message: pieces[1], date: nil) else {
                 continue
             }
+            event.date = formatter.date(from: pieces[0])
             events.append(event)
         }
 

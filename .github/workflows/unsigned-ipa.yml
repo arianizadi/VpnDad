@@ -29,18 +29,6 @@ jobs:
           repository: arianizadi/MasterDnsVPN
           path: MasterDnsVPN
 
-      - name: Checkout VayDNS dependency
-        uses: actions/checkout@v4
-        with:
-          repository: net2share/vaydns
-          path: vaydns
-
-      - name: Checkout RaptorQ dependency
-        uses: actions/checkout@v4
-        with:
-          repository: xssnick/raptorq
-          path: raptorq
-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

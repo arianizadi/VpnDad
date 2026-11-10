@@ -293,3 +293,17 @@
 "Check Connection" = "بررسی اتصال";
 "Connection" = "اتصال";
 "Last memory footprint was %@ — the extension was likely killed for approaching the ~50 MB memory limit during high traffic." = "آخرین مصرف حافظه %@ بود — افزونه احتمالاً به دلیل نزدیک شدن به محدودیت حافظه حدود ۵۰ مگابایت در ترافیک بالا توسط iOS بسته شده است.";
+"Profiles" = "پروفایل‌ها";
+"Tap to connect" = "برای اتصال ضربه بزنید";
+"Preparing profile" = "آماده‌سازی پروفایل";
+"Configuring network" = "پیکربندی شبکه";
+"Starting engine" = "راه‌اندازی موتور";
+"Testing resolvers" = "آزمایش ریزالورها";
+"Starting packet bridge" = "راه‌اندازی پل بسته‌ها";
+"Couldn't connect" = "اتصال برقرار نشد";
+"Import Profile" = "وارد کردن پروفایل";
+"Import a profile to get started." = "برای شروع یک پروفایل وارد کنید.";
+"Show QR Code" = "نمایش کد QR";
+"Copy Log" = "کپی گزارش";
+"Delete Profile?" = "پروفایل حذف شود؟";
+"This removes the profile and its saved key from this device." = "پروفایل و کلید ذخیره‌شدهٔ آن از این دستگاه حذف می‌شود.";

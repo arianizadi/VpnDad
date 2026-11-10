@@ -1,72 +1,56 @@
 import CoreImage.CIFilterBuiltins
+import NetworkExtension
 import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
+
+// MARK: - Home
 
 struct ContentView: View {
     @StateObject private var model = ProfileListModel()
     @StateObject private var vpn = VPNController()
     @AppStorage(AppConstants.advancedModeDefaultsKey) private var advancedMode = false
+    @Environment(\.scenePhase) private var scenePhase
     @State private var importing = false
-    @State private var exporting = false
-    @State private var exportDocument = ProfileDocument()
-    @State private var exportName = "vpn-profile.json"
 
-    private var statusColor: Color {
-        switch vpn.status {
-        case .connected:
-            return .green
-        case .connecting, .reasserting, .disconnecting:
-            return .orange
-        case .disconnected, .invalid:
-            return .secondary
-        @unknown default:
-            return .secondary
-        }
+    /// Profile the home screen's power button acts on: the one the tunnel
+    /// last used, or the first profile when nothing has connected yet.
+    private var quickProfile: VPNProfile? {
+        model.profiles.first { $0.id == vpn.activeProfileID } ?? model.profiles.first
     }
 
     var body: some View {
         NavigationView {
             List {
-                Section {
-                    HStack(spacing: 10) {
-                        Circle()
-                            .fill(statusColor)
-                            .frame(width: 12, height: 12)
-                        Text(vpn.status.displayName)
-                            .font(.headline)
-                        Spacer()
-                        if vpn.status == .connected || vpn.status == .connecting {
-                            Button("Disconnect", role: .destructive) {
-                                vpn.disconnect()
-                            }
-                            .font(.subheadline)
-                        }
+                if let quickProfile {
+                    Section {
+                        ConnectionHero(profile: quickProfile, model: model, vpn: vpn, showsProfileName: true)
                     }
-                    .padding(.vertical, 2)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
                 }
 
-                Section {
-                    ForEach(model.profiles) { profile in
-                        NavigationLink {
-                            ProfileDetailView(profile: profile, model: model, vpn: vpn)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(profile.name)
-                                    .font(.headline)
-                                if advancedMode {
-                                    Text("\(profile.tunnelProtocol.rawValue)  \(profile.domain)")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                }
+                if !model.profiles.isEmpty {
+                    Section("Profiles") {
+                        ForEach(model.profiles) { profile in
+                            NavigationLink {
+                                ProfileDetailView(profile: profile, model: model, vpn: vpn)
+                            } label: {
+                                ProfileRow(
+                                    profile: profile,
+                                    status: vpn.isActive(profile) ? vpn.status : .disconnected,
+                                    showsDetail: advancedMode
+                                )
                             }
                         }
-                    }
-                    .onDelete { offsets in
-                        offsets.map { model.profiles[$0] }.forEach(model.delete)
+                        .onDelete { offsets in
+                            offsets.map { model.profiles[$0] }.forEach(model.delete)
+                        }
                     }
                 }
             }
+            .listStyle(.insetGrouped)
+            .animation(.default, value: model.profiles)
             .navigationTitle("VpnDad")
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
@@ -86,34 +70,24 @@ struct ContentView: View {
             }
             .overlay {
                 if model.profiles.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "lock.shield")
-                            .font(.system(size: 44))
-                            .foregroundStyle(.secondary)
-                        Text("No Profiles")
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
-                    }
+                    EmptyProfilesView { importing = true }
                 }
             }
-
-            Text(vpn.status.displayName)
-                .foregroundStyle(.secondary)
         }
         .navigationViewStyle(.stack)
         .task {
             model.reload()
             await vpn.refresh()
         }
+        .onChange(of: scenePhase) { phase in
+            // The tunnel can change state while the app is suspended.
+            if phase == .active {
+                Task { await vpn.refresh() }
+            }
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
             model.importFile(result)
         }
-        .fileExporter(
-            isPresented: $exporting,
-            document: exportDocument,
-            contentType: .json,
-            defaultFilename: exportName
-        ) { _ in }
         .alert("VPN", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
@@ -125,23 +99,530 @@ struct ContentView: View {
     }
 }
 
+struct EmptyProfilesView: View {
+    let onImport: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "lock.shield")
+                .font(.system(size: 52, weight: .light))
+                .foregroundStyle(Color.accentColor)
+                .padding(26)
+                .background(Circle().fill(Color.accentColor.opacity(0.12)))
+            Text("No Profiles")
+                .font(.title3.weight(.semibold))
+            Text("Import a profile to get started.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button(action: onImport) {
+                Label("Import Profile", systemImage: "square.and.arrow.down")
+                    .font(.headline)
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 32)
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.top, 6)
+        }
+        .padding(32)
+    }
+}
+
+struct ProfileRow: View {
+    let profile: VPNProfile
+    let status: NEVPNStatus
+    let showsDetail: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: profile.tunnelProtocol == .masterdns ? "network" : "antenna.radiowaves.left.and.right")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(status.tint == .secondary ? Color.accentColor : status.tint)
+                .frame(width: 36, height: 36)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill((status.tint == .secondary ? Color.accentColor : status.tint).opacity(0.14))
+                )
+            VStack(alignment: .leading, spacing: 2) {
+                Text(profile.name)
+                    .font(.body.weight(.medium))
+                if status != .disconnected, status != .invalid {
+                    Text(status.displayName)
+                        .font(.caption)
+                        .foregroundStyle(status.tint)
+                } else if showsDetail {
+                    Text("\(profile.tunnelProtocol.rawValue) · \(profile.domain)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            if status == .connected {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .padding(.vertical, 3)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: status)
+    }
+}
+
+// MARK: - Connection hero
+
+/// Startup stages reported by the tunnel extension, in order.
+enum ConnectStep: Int, CaseIterable, Identifiable {
+    case prepare, network, engine, handshake, bridge
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .prepare: return L10n.string("Preparing profile")
+        case .network: return L10n.string("Configuring network")
+        case .engine: return L10n.string("Starting engine")
+        case .handshake: return L10n.string("Testing resolvers")
+        case .bridge: return L10n.string("Starting packet bridge")
+        }
+    }
+
+    static func current(metrics: TunnelMetrics?, attemptStartedAt: Date?) -> ConnectStep {
+        guard let metrics, metrics.status == "starting" || metrics.status == "running" else {
+            return .prepare
+        }
+        // Metrics from an earlier session say nothing about this attempt.
+        if let attemptStartedAt, metrics.updatedAt < attemptStartedAt.addingTimeInterval(-2) {
+            return .prepare
+        }
+        switch metrics.phase {
+        case "applying network settings":
+            return .network
+        case "engine starting", "engine running":
+            return .engine
+        case "engine handshake":
+            return .handshake
+        case let phase where phase.contains("bridge") || phase == "running":
+            return .bridge
+        default:
+            return .prepare
+        }
+    }
+}
+
+struct ConnectionHero: View {
+    let profile: VPNProfile
+    @ObservedObject var model: ProfileListModel
+    @ObservedObject var vpn: VPNController
+    var showsProfileName = false
+
+    @State private var requesting = false
+
+    private var status: NEVPNStatus {
+        requesting && vpn.status(for: profile) != .connected ? .connecting : vpn.status(for: profile)
+    }
+
+    private var metrics: TunnelMetrics? {
+        guard let metrics = model.tunnelMetrics, metrics.profileName == profile.name else {
+            return nil
+        }
+        return metrics
+    }
+
+    private var isBusy: Bool {
+        status == .connecting || status == .reasserting || status == .disconnecting
+    }
+
+    private var steps: [ConnectStep] {
+        profile.tunnelProtocol == .masterdns
+            ? ConnectStep.allCases
+            : ConnectStep.allCases.filter { $0 != .handshake }
+    }
+
+    /// Why the last attempt for this profile ended, if it failed recently.
+    private var failureMessage: String? {
+        guard status == .disconnected || status == .invalid,
+              let metrics, metrics.status == "failed",
+              Date().timeIntervalSince(metrics.updatedAt) < 120 else {
+            return nil
+        }
+        return metrics.lastError ?? metrics.engineLastError ?? L10n.string("Unknown")
+    }
+
+    private var pollIntervalNanoseconds: UInt64 {
+        switch status {
+        case .connecting, .reasserting, .disconnecting:
+            return 400_000_000
+        case .connected:
+            return 1_000_000_000
+        default:
+            return 3_000_000_000
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Button(action: toggle) {
+                PowerOrb(status: status, failed: failureMessage != nil)
+            }
+            .buttonStyle(OrbButtonStyle())
+            .disabled(status == .disconnecting)
+            .accessibilityLabel(status == .connected || isBusy ? Text("Disconnect") : Text("Connect"))
+
+            VStack(spacing: 4) {
+                // `.invalid` just means no VPN configuration is installed yet.
+                Text(failureMessage != nil
+                    ? L10n.string("Couldn't connect")
+                    : (status == .invalid ? NEVPNStatus.disconnected : status).displayName)
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(failureMessage != nil ? Color.red : Color.primary)
+                    .id(failureMessage != nil ? -1 : status.rawValue)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .move(edge: .top).combined(with: .opacity)
+                    ))
+                subtitle
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            detail
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+        .padding(.horizontal, 18)
+        .background(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        )
+        .animation(.spring(response: 0.45, dampingFraction: 0.85), value: status)
+        .animation(.spring(response: 0.45, dampingFraction: 0.85), value: failureMessage)
+        .onChange(of: vpn.status) { _ in
+            // Pick up the extension's final metrics (e.g. a failure reason)
+            // right away instead of on the next poll.
+            model.reloadTunnelMetrics()
+        }
+        .task(id: pollIntervalNanoseconds) {
+            while !Task.isCancelled {
+                model.reloadTunnelMetrics()
+                try? await Task.sleep(nanoseconds: pollIntervalNanoseconds)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var subtitle: some View {
+        if let failureMessage {
+            Text(cleanLogLine(failureMessage))
+                .lineLimit(4)
+        } else if status == .connected {
+            HStack(spacing: 6) {
+                if showsProfileName {
+                    Text(profile.name)
+                    Text("·")
+                }
+                UptimeText(startedAt: metrics?.startedAt)
+            }
+        } else if isBusy {
+            if status == .disconnecting {
+                Text(profile.name)
+            } else {
+                ElapsedText(since: vpn.connectStartedAt)
+            }
+        } else if showsProfileName {
+            Text(profile.name)
+        } else {
+            Text("Tap to connect")
+        }
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        if status == .connecting || status == .reasserting {
+            ConnectProgressList(
+                steps: steps,
+                current: ConnectStep.current(metrics: metrics, attemptStartedAt: vpn.connectStartedAt),
+                liveDetail: metrics?.lastLogLine.map(cleanLogLine)
+            )
+            .transition(.opacity.combined(with: .move(edge: .bottom)))
+        } else if status == .connected, let metrics {
+            HStack(spacing: 10) {
+                RateTile(
+                    title: "Download",
+                    systemImage: "arrow.down",
+                    tint: .green,
+                    rate: metrics.downloadBytesPerSecond,
+                    total: metrics.downloadBytes
+                )
+                RateTile(
+                    title: "Upload",
+                    systemImage: "arrow.up",
+                    tint: .blue,
+                    rate: metrics.uploadBytesPerSecond,
+                    total: metrics.uploadBytes
+                )
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+        }
+    }
+
+    private func toggle() {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        if status == .connected || isBusy {
+            vpn.disconnect()
+            return
+        }
+        Task {
+            requesting = true
+            defer { requesting = false }
+            do {
+                try await vpn.connect(profile: profile)
+            } catch {
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                model.errorMessage = error.localizedDescription
+            }
+            model.reloadTunnelMetrics()
+        }
+    }
+}
+
+/// The big power button: idle ring, sweeping arc while the tunnel is coming
+/// up or going down, and a slow breathing glow once it is connected.
+struct PowerOrb: View {
+    let status: NEVPNStatus
+    let failed: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var tint: Color {
+        if failed {
+            return .red
+        }
+        return status.tint == .secondary ? Color.accentColor : status.tint
+    }
+
+    private var isSpinning: Bool {
+        status == .connecting || status == .reasserting || status == .disconnecting
+    }
+
+    private var isOn: Bool { status == .connected }
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion || !(isSpinning || isOn))) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
+            let breath = isOn && !reduceMotion ? (sin(time * 1.6) + 1) / 2 : 0
+
+            ZStack {
+                Circle()
+                    .fill(tint.opacity(isOn ? 0.10 + 0.08 * breath : 0.08))
+                    .frame(width: 176, height: 176)
+                    .scaleEffect(1 + 0.07 * breath)
+
+                Circle()
+                    .stroke(tint.opacity(isOn ? 0.9 : 0.18), lineWidth: 5)
+                    .frame(width: 136, height: 136)
+
+                if isSpinning {
+                    Circle()
+                        .trim(from: 0, to: 0.3)
+                        .stroke(
+                            AngularGradient(
+                                colors: [tint.opacity(0), tint],
+                                center: .center,
+                                startAngle: .degrees(0),
+                                endAngle: .degrees(108)
+                            ),
+                            style: StrokeStyle(lineWidth: 5, lineCap: .round)
+                        )
+                        .frame(width: 136, height: 136)
+                        .rotationEffect(.degrees(reduceMotion ? 0 : time.truncatingRemainder(dividingBy: 1.2) / 1.2 * 360))
+                        .transition(.opacity)
+                }
+
+                Circle()
+                    .fill(
+                        isOn
+                            ? AnyShapeStyle(LinearGradient(
+                                colors: [tint, tint.opacity(0.78)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ))
+                            : AnyShapeStyle(Color(.tertiarySystemGroupedBackground))
+                    )
+                    .frame(width: 108, height: 108)
+                    .shadow(color: tint.opacity(isOn ? 0.35 : 0), radius: 14, y: 6)
+
+                Image(systemName: failed ? "exclamationmark" : "power")
+                    .font(.system(size: 40, weight: .semibold))
+                    .foregroundStyle(isOn ? Color.white : tint)
+            }
+            .frame(width: 190, height: 190)
+        }
+        .animation(.easeInOut(duration: 0.45), value: status)
+        .animation(.easeInOut(duration: 0.45), value: failed)
+    }
+}
+
+struct OrbButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+    }
+}
+
+struct ConnectProgressList: View {
+    let steps: [ConnectStep]
+    let current: ConnectStep
+    let liveDetail: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(steps) { step in
+                HStack(spacing: 10) {
+                    ZStack {
+                        if step.rawValue < current.rawValue {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .transition(.scale.combined(with: .opacity))
+                        } else if step == current {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "circle")
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .frame(width: 20, height: 20)
+
+                    Text(step.title)
+                        .font(.subheadline.weight(step == current ? .semibold : .regular))
+                        .foregroundStyle(step.rawValue > current.rawValue ? .secondary : .primary)
+                    Spacer(minLength: 0)
+                }
+            }
+
+            if let liveDetail, !liveDetail.isEmpty {
+                Text(liveDetail)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 2)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(.tertiarySystemGroupedBackground))
+        )
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: current)
+    }
+}
+
+struct RateTile: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    let rate: Double
+    let total: UInt64
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(tint.opacity(0.15)))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(L10n.string(title))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(formatRate(rate))
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Text(formatBytes(total))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(.tertiarySystemGroupedBackground))
+        )
+    }
+}
+
+/// Uptime that ticks every second without waiting for a metrics poll.
+struct UptimeText: View {
+    let startedAt: Date?
+
+    var body: some View {
+        if let startedAt {
+            TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                Text(formatDuration(max(0, Int(context.date.timeIntervalSince(startedAt)))))
+                    .monospacedDigit()
+            }
+        } else {
+            Text("Connected")
+        }
+    }
+}
+
+struct ElapsedText: View {
+    let since: Date?
+
+    var body: some View {
+        if let since {
+            TimelineView(.periodic(from: since, by: 1)) { context in
+                Text(formatDuration(max(0, Int(context.date.timeIntervalSince(since)))))
+                    .monospacedDigit()
+            }
+        } else {
+            Text(" ")
+        }
+    }
+}
+
+// MARK: - Profile detail
+
 struct ProfileDetailView: View {
     let profile: VPNProfile
     @ObservedObject var model: ProfileListModel
     @ObservedObject var vpn: VPNController
     @AppStorage(AppConstants.advancedModeDefaultsKey) private var advancedMode = false
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var health = HealthModel()
-    @State private var connecting = false
     @State private var exporting = false
     @State private var exportDocument = ProfileDocument()
     @State private var diagnosticExporting = false
     @State private var diagnosticDocument = ProfileDocument()
     @State private var editingProfile = false
+    @State private var confirmingDelete = false
+    @State private var showingQRCode = false
 
     private let healthProbeColumns = [
         GridItem(.flexible(), spacing: 8),
         GridItem(.flexible(), spacing: 8)
     ]
+
+    /// Tunnel status as it applies to this profile.
+    private var status: NEVPNStatus {
+        vpn.status(for: profile)
+    }
+
+    /// Metrics only describe this profile if its tunnel wrote them.
+    private var metrics: TunnelMetrics? {
+        guard let metrics = model.tunnelMetrics, metrics.profileName == profile.name else {
+            return nil
+        }
+        return metrics
+    }
 
     private var currentProbe: HealthProbeSnapshot? {
         guard health.probeSnapshot?.profileID == profile.id else {
@@ -150,29 +631,26 @@ struct ProfileDetailView: View {
         return health.probeSnapshot
     }
 
-    private var healthReport: TunnelHealthReport {
+    private func makeHealthReport() -> TunnelHealthReport {
         TunnelHealthEvaluator.evaluate(
             profile: profile,
-            vpnStatus: vpn.status,
-            metrics: model.tunnelMetrics,
+            vpnStatus: status,
+            metrics: metrics,
             probe: currentProbe,
-            tunnelLog: model.tunnelLog
+            // The log only feeds the advanced timeline.
+            tunnelLog: advancedMode ? model.tunnelLog : ""
         )
-    }
-
-    private var connectDisabled: Bool {
-        connecting || vpn.status == .connected || vpn.status == .connecting
     }
 
     var body: some View {
         Form {
-            connectionSection
+            Section {
+                ConnectionHero(profile: profile, model: model, vpn: vpn)
+            }
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
 
             healthSection
-
-            if vpn.status == .connected, !advancedMode {
-                simpleActivitySection
-            }
 
             if advancedMode {
                 profileInfoSection
@@ -182,6 +660,7 @@ struct ProfileDetailView: View {
             }
         }
         .navigationTitle(profile.name)
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
@@ -194,16 +673,27 @@ struct ProfileDetailView: View {
                         } label: {
                             Label("Edit", systemImage: "slider.horizontal.3")
                         }
-                        Button(role: .destructive) {
-                            model.delete(profile)
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
+                    }
+                    Button(role: .destructive) {
+                        confirmingDelete = true
+                    } label: {
+                        Label("Delete", systemImage: "trash")
                     }
                 } label: {
                     Label("Options", systemImage: "ellipsis.circle")
                 }
             }
+        }
+        .confirmationDialog("Delete Profile?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                if vpn.isActive(profile) {
+                    vpn.disconnect()
+                }
+                model.delete(profile)
+                dismiss()
+            }
+        } message: {
+            Text("This removes the profile and its saved key from this device.")
         }
         .sheet(isPresented: $editingProfile) {
             ProfileEditorView(profile: profile) { updated in
@@ -223,19 +713,20 @@ struct ProfileDetailView: View {
             defaultFilename: "\(profile.name)-diagnostics.json"
         ) { _ in }
         .onAppear {
-            model.reloadTunnelLog()
-            model.reloadTunnelMetrics()
             health.reload()
         }
-        .task {
+        .task(id: advancedMode) {
+            // Only the advanced sections show the log; the hero polls metrics.
+            guard advancedMode else {
+                return
+            }
             while !Task.isCancelled {
-                model.reloadTunnelMetrics()
                 model.reloadTunnelLog()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
-        .task(id: "\(profile.id.uuidString)-\(vpn.status.rawValue)") {
-            guard vpn.status == .connected else {
+        .task(id: "\(profile.id.uuidString)-\(status.rawValue)") {
+            guard status == .connected else {
                 health.resetAutomaticRun()
                 return
             }
@@ -243,77 +734,16 @@ struct ProfileDetailView: View {
             if Task.isCancelled {
                 return
             }
-            await health.runAutomaticIfNeeded(profile: profile, vpnStatus: vpn.status, metrics: model.tunnelMetrics)
-            model.reloadTunnelLog()
-        }
-    }
-
-    private var statusColor: Color {
-        switch vpn.status {
-        case .connected:
-            return .green
-        case .connecting, .reasserting, .disconnecting:
-            return .orange
-        case .disconnected, .invalid:
-            return .secondary
-        @unknown default:
-            return .secondary
-        }
-    }
-
-    private var isTunnelActive: Bool {
-        vpn.status == .connected || vpn.status == .connecting || vpn.status == .reasserting
-    }
-
-    private var connectionSection: some View {
-        Section {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 12, height: 12)
-                Text(vpn.status.displayName)
-                    .font(.headline)
-                Spacer()
-                if vpn.status == .connected, let metrics = model.tunnelMetrics {
-                    Text(formatDuration(metrics.uptimeSeconds))
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.vertical, 2)
-
-            if isTunnelActive {
-                Button(role: .destructive) {
-                    vpn.disconnect()
-                } label: {
-                    Label("Disconnect", systemImage: "poweroff")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity, minHeight: 36)
-                }
-                .disabled(vpn.status == .disconnecting)
-            } else {
-                Button {
-                    Task {
-                        await connect()
-                    }
-                } label: {
-                    if connecting {
-                        ProgressView()
-                            .frame(maxWidth: .infinity, minHeight: 36)
-                    } else {
-                        Label("Connect", systemImage: "power")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity, minHeight: 36)
-                    }
-                }
-                .disabled(connectDisabled)
-            }
+            model.reloadTunnelMetrics()
+            await health.runAutomaticIfNeeded(profile: profile, vpnStatus: status, metrics: metrics)
         }
     }
 
     private var healthSection: some View {
-        Section("Health") {
-            HealthSummaryView(report: healthReport, maxEvidence: advancedMode ? 5 : 2)
+        // Evaluate once per render; the report feeds two subviews.
+        let report = makeHealthReport()
+        return Section("Health") {
+            HealthSummaryView(report: report, maxEvidence: advancedMode ? 5 : 2)
 
             Button {
                 Task {
@@ -373,34 +803,10 @@ struct ProfileDetailView: View {
                 }
 
                 DisclosureGroup {
-                    HealthTimelineView(events: healthReport.timeline)
+                    HealthTimelineView(events: report.timeline)
                 } label: {
                     Label("Connection Timeline", systemImage: "timeline.selection")
                 }
-            }
-        }
-    }
-
-    private var simpleActivitySection: some View {
-        Section("Connection") {
-            if let metrics = model.tunnelMetrics {
-                HStack(spacing: 8) {
-                    MetricTile(
-                        title: "Download",
-                        value: formatRate(metrics.downloadBytesPerSecond),
-                        detail: formatBytes(metrics.downloadBytes),
-                        systemImage: "arrow.down.circle"
-                    )
-                    MetricTile(
-                        title: "Upload",
-                        value: formatRate(metrics.uploadBytesPerSecond),
-                        detail: formatBytes(metrics.uploadBytes),
-                        systemImage: "arrow.up.circle"
-                    )
-                }
-            } else {
-                Text("No tunnel metrics yet")
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -421,23 +827,10 @@ struct ProfileDetailView: View {
 
     private var liveMetricsSection: some View {
         Section("Live Metrics") {
-            HStack {
-                Button {
-                    model.reloadTunnelMetrics()
-                } label: {
-                    Label("Refresh", systemImage: "gauge.with.dots.needle.50percent")
-                }
-
-                Spacer()
-
-                if let metrics = model.tunnelMetrics {
-                    Text(L10n.string("Updated %@", relativeTime(metrics.updatedAt)))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if let metrics = model.tunnelMetrics {
+            if let metrics {
+                Text(L10n.string("Updated %@", relativeTime(metrics.updatedAt)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 TunnelMetricsView(metrics: metrics)
             } else {
                 Text("No tunnel metrics yet")
@@ -450,10 +843,12 @@ struct ProfileDetailView: View {
         Section("Tunnel Log") {
             HStack {
                 Button {
-                    model.reloadTunnelLog()
+                    UIPasteboard.general.string = model.tunnelLog
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("Copy Log", systemImage: "doc.on.doc")
                 }
+                .disabled(model.tunnelLog.isEmpty)
 
                 Spacer()
 
@@ -463,14 +858,17 @@ struct ProfileDetailView: View {
                     Label("Clear", systemImage: "trash")
                 }
             }
+            .buttonStyle(.borderless)
 
             if model.tunnelLog.isEmpty {
                 Text("No tunnel log yet")
                     .foregroundStyle(.secondary)
             } else {
                 ScrollView {
-                    Text(model.tunnelLog)
-                        .font(.caption.monospaced())
+                    // Show the tail only: laying out the whole log as one
+                    // Text on every refresh is what made this screen stutter.
+                    Text(String(model.tunnelLog.suffix(12_000)))
+                        .font(.caption2.monospaced())
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
@@ -479,47 +877,42 @@ struct ProfileDetailView: View {
         }
     }
 
-    @ViewBuilder
     private var exportSection: some View {
-        if let exportText = model.exportText(for: profile) {
-            Section {
+        Section {
+            Button {
+                withAnimation {
+                    showingQRCode.toggle()
+                }
+            } label: {
+                Label("Show QR Code", systemImage: "qrcode")
+            }
+
+            if showingQRCode, let exportText = model.exportText(for: profile) {
                 QRCodeView(text: exportText)
                     .frame(maxWidth: .infinity, minHeight: 220)
-
-                Button {
-                    if let data = exportText.data(using: .utf8) {
-                        exportDocument = ProfileDocument(data: data)
-                        exporting = true
-                    }
-                } label: {
-                    Label("Export JSON", systemImage: "square.and.arrow.up")
-                }
             }
-        }
-    }
 
-    private func connect() async {
-        connecting = true
-        defer { connecting = false }
-        do {
-            try await vpn.connect(profile: profile)
-            model.reloadTunnelLog()
-        } catch {
-            model.errorMessage = error.localizedDescription
-            model.reloadTunnelLog()
+            Button {
+                if let data = model.exportText(for: profile)?.data(using: .utf8) {
+                    exportDocument = ProfileDocument(data: data)
+                    exporting = true
+                }
+            } label: {
+                Label("Export JSON", systemImage: "square.and.arrow.up")
+            }
         }
     }
 
     private func runHealthCheck(_ kind: HealthProbeKind) async {
         model.reloadTunnelMetrics()
-        await health.runCheck(kind, profile: profile, vpnStatus: vpn.status, metrics: model.tunnelMetrics)
+        await health.runCheck(kind, profile: profile, vpnStatus: status, metrics: metrics)
         model.reloadTunnelMetrics()
         model.reloadTunnelLog()
     }
 
     private func runAllHealthChecks() async {
         model.reloadTunnelMetrics()
-        await health.runAllChecks(profile: profile, vpnStatus: vpn.status, metrics: model.tunnelMetrics)
+        await health.runAllChecks(profile: profile, vpnStatus: status, metrics: metrics)
         model.reloadTunnelMetrics()
         model.reloadTunnelLog()
     }
@@ -529,16 +922,16 @@ struct ProfileDetailView: View {
         model.reloadTunnelLog()
         let report = TunnelHealthEvaluator.evaluate(
             profile: profile,
-            vpnStatus: vpn.status,
-            metrics: model.tunnelMetrics,
+            vpnStatus: status,
+            metrics: metrics,
             probe: currentProbe,
             tunnelLog: model.tunnelLog
         )
         do {
             let data = try DiagnosticBundleBuilder.makeData(
                 profile: profile,
-                vpnStatus: vpn.status,
-                metrics: model.tunnelMetrics,
+                vpnStatus: status,
+                metrics: metrics,
                 probe: currentProbe,
                 report: report,
                 tunnelLog: model.tunnelLog
@@ -1051,13 +1444,17 @@ struct HealthSummaryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label {
+            HStack(spacing: 10) {
+                Image(systemName: report.verdict.systemImage)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(report.verdict.tint)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(report.verdict.tint.opacity(0.15)))
                 Text(report.verdict.displayName)
                     .font(.headline)
-            } icon: {
-                Image(systemName: report.verdict.systemImage)
+                    .foregroundStyle(report.verdict.tint)
             }
-            .foregroundStyle(report.verdict.tint)
+            .animation(.easeInOut(duration: 0.3), value: report.verdict)
 
             Text(L10n.string(report.summary))
                 .font(.subheadline)
@@ -1163,7 +1560,7 @@ struct HealthTimelineView: View {
                 .foregroundStyle(.secondary)
         } else {
             VStack(alignment: .leading, spacing: 10) {
-                ForEach(events) { event in
+                ForEach(Array(events.enumerated()), id: \.offset) { _, event in
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: event.severity.systemImage)
                             .foregroundStyle(event.severity.tint)
@@ -1455,8 +1852,8 @@ struct MetricTile: View {
         }
         .frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
         .padding(10)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color(.tertiarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -1644,20 +2041,21 @@ final class ProfileListModel: ObservableObject {
         }
     }
 
+    // These two are polled. They publish only on change so an idle screen
+    // does not re-render, and they stay quiet on failure: a transient read
+    // error must not raise an alert every poll.
     func reloadTunnelLog() {
-        do {
-            tunnelLog = try repository.readTunnelLog()
-        } catch {
-            errorMessage = error.localizedDescription
+        guard let log = try? repository.readTunnelLog(), log != tunnelLog else {
+            return
         }
+        tunnelLog = log
     }
 
     func reloadTunnelMetrics() {
-        do {
-            tunnelMetrics = try repository.readTunnelMetrics()
-        } catch {
-            errorMessage = error.localizedDescription
+        guard let metrics = try? repository.readTunnelMetrics(), metrics != tunnelMetrics else {
+            return
         }
+        tunnelMetrics = metrics
     }
 
     func clearTunnelLog() {
@@ -1696,32 +2094,61 @@ private func relativeTime(_ date: Date) -> String {
     if seconds < 2 {
         return L10n.string("now")
     }
-    return L10n.string("%@ ago", L10n.string("%ds", seconds))
+    return L10n.string("%@ ago", formatDuration(seconds))
+}
+
+/// Engine log lines carry colour markup such as `<green>…</green>`.
+private func cleanLogLine(_ line: String) -> String {
+    line.replacingOccurrences(of: "</?[a-zA-Z]+>", with: "", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+extension NEVPNStatus {
+    var tint: Color {
+        switch self {
+        case .connected:
+            return .green
+        case .connecting, .reasserting, .disconnecting:
+            return .orange
+        default:
+            return .secondary
+        }
+    }
 }
 
 struct QRCodeView: View {
     let text: String
-    private let context = CIContext()
-    private let filter = CIFilter.qrCodeGenerator()
+    @State private var image: UIImage?
 
     var body: some View {
-        if let image = makeImage() {
-            Image(uiImage: image)
-                .interpolation(.none)
-                .resizable()
-                .scaledToFit()
-                .padding()
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .interpolation(.none)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white))
+                    .padding()
+            } else {
+                ProgressView()
+            }
+        }
+        // Rendered once per payload instead of on every view update.
+        .task(id: text) {
+            image = Self.makeImage(text)
         }
     }
 
-    private func makeImage() -> UIImage? {
+    private static func makeImage(_ text: String) -> UIImage? {
+        let filter = CIFilter.qrCodeGenerator()
         filter.setValue(Data(text.utf8), forKey: "inputMessage")
         filter.correctionLevel = "M"
         guard let output = filter.outputImage else {
             return nil
         }
         let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
-        guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else {
+        guard let cgImage = CIContext().createCGImage(scaled, from: scaled.extent) else {
             return nil
         }
         return UIImage(cgImage: cgImage)

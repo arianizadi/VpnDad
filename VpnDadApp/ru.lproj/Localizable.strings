@@ -293,3 +293,17 @@
 "Check Connection" = "Проверить соединение";
 "Connection" = "Соединение";
 "Last memory footprint was %@ — the extension was likely killed for approaching the ~50 MB memory limit during high traffic." = "Последний объём памяти был %@ — расширение, вероятно, было завершено из-за приближения к лимиту памяти около 50 МБ при высоком трафике.";
+"Profiles" = "Профили";
+"Tap to connect" = "Нажмите для подключения";
+"Preparing profile" = "Подготовка профиля";
+"Configuring network" = "Настройка сети";
+"Starting engine" = "Запуск движка";
+"Testing resolvers" = "Проверка резолверов";
+"Starting packet bridge" = "Запуск пакетного моста";
+"Couldn't connect" = "Не удалось подключиться";
+"Import Profile" = "Импортировать профиль";
+"Import a profile to get started." = "Импортируйте профиль, чтобы начать.";
+"Show QR Code" = "Показать QR-код";
+"Copy Log" = "Скопировать журнал";
+"Delete Profile?" = "Удалить профиль?";
+"This removes the profile and its saved key from this device." = "Профиль и сохранённый ключ будут удалены с этого устройства.";

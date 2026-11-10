@@ -18,8 +18,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // write queue can absorb an entire download burst and push the extension
     // past the jetsam footprint limit. Dropping IP packets is safe — TCP
     // retransmits and backs off, which is the backpressure we want.
-    private let nativePacketMaxPendingWrites: Int64 = 512
-    private var nativePacketPendingWrites: Int64 = 0
+    private let nativePacketMaxPendingWrites = 512
+    // Engine output is batched: packets queue here and one drain block hands
+    // the whole backlog to NEPacketTunnelFlow in a single writePackets call,
+    // instead of one dispatch and one write per packet.
+    private var nativePacketPendingPackets: [Data] = []
+    private var nativePacketPendingProtocols: [NSNumber] = []
+    private var nativePacketDrainScheduled = false
+    private let telemetryLock = NSLock()
     private var telemetryTimer: DispatchSourceTimer?
     private var telemetryTick = 0
     private var nativePacketPumpActive = false
@@ -55,6 +61,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         "source=\(runtimeSelection.runtimeModeSource)"
                     )
                 }
+                telemetry.setPhase("applying network settings")
                 try await applyNetworkSettings(for: profile)
                 log("network settings applied for \(profile.tunnelProtocol.rawValue)")
                 telemetry.setPhase("engine starting")
@@ -101,10 +108,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             } catch {
                 telemetry.markFailed(error.localizedDescription)
                 log("tunnel start failed: \(error.localizedDescription)")
-                writeTelemetrySnapshot(forceLog: true)
                 hevRunner.stop()
                 stopNativePacketPump()
                 engineRuntime.stop()
+                stopTelemetrySampler()
+                // Written last so the app reads the failure, not a stale tick.
+                writeTelemetrySnapshot(forceLog: true)
                 completionHandler(error)
             }
         }
@@ -258,6 +267,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
             for packet in packets where !packet.isEmpty {
                 do {
+                    // The engine drops malformed packets itself; an error here
+                    // means the engine is gone, which is fatal for the tunnel.
                     try self.engineRuntime.writePacket(packet)
                 } catch {
                     self.handleNativePacketError(error)
@@ -275,32 +286,52 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
         nativePacketCountersLock.lock()
-        if nativePacketPendingWrites >= nativePacketMaxPendingWrites {
+        if nativePacketPendingPackets.count >= nativePacketMaxPendingWrites {
             nativePacketFlowDroppedPackets += 1
             nativePacketLastFlowError = "native packet output dropped: write queue full"
             nativePacketCountersLock.unlock()
             return
         }
-        nativePacketPendingWrites += 1
+        nativePacketPendingPackets.append(packet)
+        nativePacketPendingProtocols.append(protocolFamily)
+        let needsDrain = !nativePacketDrainScheduled
+        nativePacketDrainScheduled = true
         nativePacketCountersLock.unlock()
-        nativePacketWriteQueue.async { [weak self] in
-            guard let self else {
+
+        if needsDrain {
+            nativePacketWriteQueue.async { [weak self] in
+                self?.drainNativePacketOutput()
+            }
+        }
+    }
+
+    private func drainNativePacketOutput() {
+        while true {
+            nativePacketCountersLock.lock()
+            let packets = nativePacketPendingPackets
+            let protocols = nativePacketPendingProtocols
+            nativePacketPendingPackets.removeAll(keepingCapacity: true)
+            nativePacketPendingProtocols.removeAll(keepingCapacity: true)
+            if packets.isEmpty {
+                nativePacketDrainScheduled = false
+                nativePacketCountersLock.unlock()
                 return
             }
-            self.nativePacketCountersLock.lock()
-            self.nativePacketPendingWrites -= 1
-            self.nativePacketCountersLock.unlock()
-            guard self.isNativePacketPumpActive() else {
-                return
+            nativePacketCountersLock.unlock()
+
+            guard isNativePacketPumpActive() else {
+                continue
             }
-            let accepted = self.packetFlow.writePackets([packet], withProtocols: [protocolFamily])
-            self.recordNativePacketFlowWrite(byteCount: packet.count, accepted: accepted)
+            let accepted = packetFlow.writePackets(packets, withProtocols: protocols)
+            let byteCount = packets.reduce(0) { $0 + $1.count }
+            recordNativePacketFlowWrite(packetCount: packets.count, byteCount: byteCount, accepted: accepted)
         }
     }
 
     private func resetNativePacketFlowCounters() {
         nativePacketCountersLock.lock()
-        nativePacketPendingWrites = 0
+        nativePacketPendingPackets.removeAll()
+        nativePacketPendingProtocols.removeAll()
         nativePacketFlowWritePackets = 0
         nativePacketFlowWriteBytes = 0
         nativePacketFlowWriteFailures = 0
@@ -324,13 +355,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return snapshot
     }
 
-    private func recordNativePacketFlowWrite(byteCount: Int, accepted: Bool) {
+    private func recordNativePacketFlowWrite(packetCount: Int, byteCount: Int, accepted: Bool) {
         nativePacketCountersLock.lock()
         if accepted {
-            nativePacketFlowWritePackets += 1
+            nativePacketFlowWritePackets += UInt64(packetCount)
             nativePacketFlowWriteBytes += UInt64(byteCount)
         } else {
-            nativePacketFlowWriteFailures += 1
+            nativePacketFlowWriteFailures += UInt64(packetCount)
             nativePacketLastFlowError = "NEPacketTunnelFlow rejected native packet output"
         }
         nativePacketCountersLock.unlock()
@@ -367,19 +398,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func startTelemetrySampler() {
         stopTelemetrySampler()
-        telemetryTick = 0
         let timer = DispatchSource.makeTimerSource(queue: telemetryQueue)
         timer.schedule(deadline: .now() + 1, repeating: 1)
         timer.setEventHandler { [weak self] in
             self?.writeTelemetrySnapshot(forceLog: false)
         }
         timer.resume()
+        telemetryLock.lock()
+        telemetryTick = 0
         telemetryTimer = timer
+        telemetryLock.unlock()
     }
 
     private func stopTelemetrySampler() {
-        telemetryTimer?.cancel()
+        telemetryLock.lock()
+        let timer = telemetryTimer
         telemetryTimer = nil
+        telemetryLock.unlock()
+        timer?.cancel()
     }
 
     @discardableResult
@@ -392,8 +428,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         )
         try? repository.writeTunnelMetrics(metrics)
 
+        telemetryLock.lock()
         telemetryTick += 1
-        guard forceLog || telemetryTick % 5 == 0 else {
+        let tick = telemetryTick
+        telemetryLock.unlock()
+        guard forceLog || tick % 5 == 0 else {
             return metrics
         }
         log(
@@ -878,7 +917,8 @@ private final class TunnelTelemetry {
             metrics.uptimeSeconds = max(0, Int(now.timeIntervalSince(startedAt)))
         }
 
-        let nativeBridge = nativeBridgeSnapshot(engineStatusJSON)
+        let engineStatus = (try? JSONSerialization.jsonObject(with: Data(engineStatusJSON.utf8))) as? [String: Any]
+        let nativeBridge = nativeBridgeSnapshot(engineStatus)
         let bridgeInputPackets = nativeBridge?.inputPackets ?? hev.bridgeInputPackets
         let bridgeInputBytes = nativeBridge?.inputBytes ?? hev.bridgeInputBytes
         let bridgeOutputPackets = nativeBridge?.outputPackets ?? hev.bridgeOutputPackets
@@ -931,14 +971,14 @@ private final class TunnelTelemetry {
         metrics.threadCount = resources.threadCount
         metrics.openFileDescriptorCount = resources.openFileDescriptorCount
         metrics.engineStatusJSON = engineStatusJSON
-        applyEngineStatus(engineStatusJSON)
+        applyEngineStatus(engineStatus)
 
         let copy = metrics
         lock.unlock()
         return copy
     }
 
-    private func nativeBridgeSnapshot(_ raw: String) -> (
+    private func nativeBridgeSnapshot(_ object: [String: Any]?) -> (
         inputPackets: UInt64,
         inputBytes: UInt64,
         outputPackets: UInt64,
@@ -946,11 +986,7 @@ private final class TunnelTelemetry {
         packetWriteErrors: UInt64,
         lastError: String?
     )? {
-        guard
-            let data = raw.data(using: .utf8),
-            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let native = object["nativePacket"] as? [String: Any]
-        else {
+        guard let native = object?["nativePacket"] as? [String: Any] else {
             return nil
         }
         return (
@@ -992,11 +1028,8 @@ private final class TunnelTelemetry {
         }
     }
 
-    private func applyEngineStatus(_ raw: String) {
-        guard
-            let data = raw.data(using: .utf8),
-            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
+    private func applyEngineStatus(_ object: [String: Any]?) {
+        guard let object else {
             return
         }
         metrics.engineRunning = object["running"] as? Bool

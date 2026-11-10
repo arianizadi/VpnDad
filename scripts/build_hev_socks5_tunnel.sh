@@ -2,8 +2,9 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
-VENDOR_DIR="$ROOT_DIR/iOS/Vendor"
+APP_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+# Vendor/ lives in this checkout whatever the directory is called.
+VENDOR_DIR="$APP_DIR/Vendor"
 SRC_DIR="$VENDOR_DIR/hev-socks5-tunnel-src"
 OUT="$VENDOR_DIR/HevSocks5Tunnel.xcframework"
 

@@ -293,3 +293,17 @@
 "Check Connection" = "Check Connection";
 "Connection" = "Connection";
 "Last memory footprint was %@ — the extension was likely killed for approaching the ~50 MB memory limit during high traffic." = "Last memory footprint was %@ — the extension was likely killed for approaching the ~50 MB memory limit during high traffic.";
+"Profiles" = "Profiles";
+"Tap to connect" = "Tap to connect";
+"Preparing profile" = "Preparing profile";
+"Configuring network" = "Configuring network";
+"Starting engine" = "Starting engine";
+"Testing resolvers" = "Testing resolvers";
+"Starting packet bridge" = "Starting packet bridge";
+"Couldn't connect" = "Couldn't connect";
+"Import Profile" = "Import Profile";
+"Import a profile to get started." = "Import a profile to get started.";
+"Show QR Code" = "Show QR Code";
+"Copy Log" = "Copy Log";
+"Delete Profile?" = "Delete Profile?";
+"This removes the profile and its saved key from this device." = "This removes the profile and its saved key from this device.";

@@ -450,21 +450,31 @@ final class ProfileRepository {
         return UUID(uuidString: raw.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    /// Returns the tail of the tunnel log. Only the last `maxBytes` are read
+    /// from disk, so polling this stays cheap as the log grows.
     func readTunnelLog(maxBytes: Int = 128000) throws -> String {
         let url = try tunnelLogURL()
-        guard fileManager.fileExists(atPath: url.path) else {
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
             return ""
         }
-        var data = try Data(contentsOf: url)
-        if data.count > maxBytes {
-            data = data.suffix(maxBytes)
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        let start = size > UInt64(maxBytes) ? size - UInt64(maxBytes) : 0
+        try handle.seek(toOffset: start)
+        var data = (try handle.readToEnd()) ?? Data()
+        // Drop the partial first line (and any split UTF-8 scalar) at the cut.
+        if start > 0, let newline = data.firstIndex(of: 0x0A) {
+            data = data[data.index(after: newline)...]
         }
-        return String(data: data, encoding: .utf8) ?? ""
+        return String(decoding: data, as: UTF8.self)
     }
 
     // Called for every tunnel log line, which is hundreds of times per second
-    // under load, so the file handle stays open between calls and the file is
-    // trimmed in place once it grows past the rotation threshold.
+    // under load, so the descriptor stays open between calls. The app and the
+    // tunnel extension both append to this file from separate processes, so
+    // the descriptor is opened with O_APPEND (each write lands at the real end
+    // of the file) and the file is only ever trimmed in place — replacing or
+    // unlinking it would leave the other process writing to an orphaned inode.
     func appendTunnelLog(_ line: String) throws {
         let timestamp = Self.tunnelLogTimestampFormatter.string(from: Date())
         let data = Data("\(timestamp) \(line)\n".utf8)
@@ -474,17 +484,13 @@ final class ProfileRepository {
         defer { tunnelLogLock.unlock() }
 
         if tunnelLogHandle == nil {
-            if !fileManager.fileExists(atPath: url.path) {
-                fileManager.createFile(atPath: url.path, contents: nil)
+            let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+            guard fd >= 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
-            if let handle = try? FileHandle(forWritingTo: url) {
-                _ = try? handle.seekToEnd()
-                tunnelLogHandle = handle
-            }
+            tunnelLogHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         }
-
         guard let handle = tunnelLogHandle else {
-            try data.write(to: url, options: .atomic)
             return
         }
 
@@ -496,13 +502,20 @@ final class ProfileRepository {
             throw error
         }
 
-        if let offset = try? handle.offset(), offset > tunnelLogRotateAtBytes {
-            try? handle.close()
-            tunnelLogHandle = nil
-            if let existing = try? Data(contentsOf: url) {
-                try? existing.suffix(tunnelLogKeepBytes).write(to: url, options: .atomic)
-            }
+        var info = stat()
+        if fstat(handle.fileDescriptor, &info) == 0, UInt64(info.st_size) > tunnelLogRotateAtBytes {
+            trimTunnelLogInPlace(url: url, handle: handle)
         }
+    }
+
+    private func trimTunnelLogInPlace(url: URL, handle: FileHandle) {
+        guard let tail = try? readTunnelLog(maxBytes: tunnelLogKeepBytes) else {
+            return
+        }
+        guard ftruncate(handle.fileDescriptor, 0) == 0 else {
+            return
+        }
+        try? handle.write(contentsOf: Data(tail.utf8))
     }
 
     func readTunnelMetrics() throws -> TunnelMetrics? {
@@ -517,8 +530,8 @@ final class ProfileRepository {
     }
 
     func writeTunnelMetrics(_ metrics: TunnelMetrics) throws {
+        // Rewritten every second by the extension; keep the encoding compact.
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(metrics)
         try data.write(to: tunnelMetricsURL(), options: .atomic)
@@ -548,13 +561,17 @@ final class ProfileRepository {
         guard fileManager.fileExists(atPath: url.path) else {
             return
         }
-        try fileManager.removeItem(at: url)
+        // Truncate instead of deleting: a running tunnel extension keeps its
+        // descriptor open and would otherwise keep logging into a dead file.
+        guard truncate(url.path, 0) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     private func saveProfiles(_ profiles: [VPNProfile]) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(profiles.sorted { $0.name < $1.name })
+        let data = try encoder.encode(profiles.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })
         try ensureSharedDirectory()
         try data.write(to: profilesURL(), options: .atomic)
     }

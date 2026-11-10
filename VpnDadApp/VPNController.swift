@@ -1,10 +1,16 @@
 import Foundation
 import NetworkExtension
+import UIKit
 
 @MainActor
 final class VPNController: ObservableObject {
     @Published private(set) var status: NEVPNStatus = .invalid
+    /// Profile the current (or most recent) tunnel was started with.
+    @Published private(set) var activeProfileID: UUID?
+    /// When the current connect attempt began; drives the progress UI.
+    @Published private(set) var connectStartedAt: Date?
 
+    private let repository = ProfileRepository()
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
     private var lastLoggedStatusRawValue: Int?
@@ -28,27 +34,66 @@ final class VPNController: ObservableObject {
         }
     }
 
+    var isTunnelActive: Bool {
+        status == .connected || status == .connecting || status == .reasserting
+    }
+
+    func isActive(_ profile: VPNProfile) -> Bool {
+        isTunnelActive && activeProfileID == profile.id
+    }
+
+    /// The tunnel status as it applies to `profile`: a tunnel running for a
+    /// different profile reads as disconnected here.
+    func status(for profile: VPNProfile) -> NEVPNStatus {
+        guard status != .invalid, status != .disconnected else {
+            return status
+        }
+        return activeProfileID == nil || activeProfileID == profile.id ? status : .disconnected
+    }
+
     func refresh() async {
+        #if targetEnvironment(simulator)
+        // The simulator cannot run a packet tunnel. Launching with
+        // VPNDAD_DEMO_STATUS=connecting|connected shows those UI states there.
+        if let demo = ProcessInfo.processInfo.environment["VPNDAD_DEMO_STATUS"] {
+            activeProfileID = try? repository.readSelectedProfileID()
+            connectStartedAt = demo == "connecting" ? Date() : nil
+            status = demo == "connecting" ? .connecting : (demo == "connected" ? .connected : .disconnected)
+            return
+        }
+        #endif
         do {
-            manager = try await loadOrCreateManager()
-            setStatus(manager?.connection.status ?? .invalid, source: "refresh")
+            let loaded = try await loadOrCreateManager()
+            manager = loaded
+            activeProfileID = profileID(from: loaded) ?? (try? repository.readSelectedProfileID())
+            setStatus(loaded.connection.status, source: "refresh")
         } catch {
             setStatus(.invalid, source: "refresh error")
         }
     }
 
     func connect(profile: VPNProfile) async throws {
-        let repository = ProfileRepository()
         try? repository.appendTunnelLog("app connect requested for \(profile.name)")
         let startSelection = try repository.resolvedProfile(id: profile.id).preparedForIOSTunnelStart()
         let profileJSON = try repository.profileJSONString(startSelection.profile, includeSecrets: true)
+
+        let activeManager = try await loadOrCreateManager()
+        manager = activeManager
+
+        // startVPNTunnel is ignored while a tunnel is up, so switching
+        // profiles has to bring the old one down first.
+        if activeManager.connection.status != .disconnected, activeManager.connection.status != .invalid {
+            try? repository.appendTunnelLog("app stopping the active tunnel before switching profile")
+            activeManager.connection.stopVPNTunnel()
+            await waitForDisconnect(activeManager)
+        }
+
         try repository.writeSelectedProfileID(profile.id)
         try? repository.appendTunnelLog("app selected profile \(profile.id.uuidString)")
         try? repository.appendTunnelLog(
             "app selected runtime \(startSelection.runtimeMode.rawValue) source=\(startSelection.runtimeModeSource)"
         )
 
-        let activeManager = try await loadOrCreateManager()
         let tunnelProtocol = NETunnelProviderProtocol()
         tunnelProtocol.providerBundleIdentifier = AppConstants.tunnelBundleIdentifier
         tunnelProtocol.providerConfiguration = ["profileID": profile.id.uuidString]
@@ -61,20 +106,50 @@ final class VPNController: ObservableObject {
 
         try await save(activeManager)
         try await load(activeManager)
-        manager = activeManager
         try? repository.appendTunnelLog("app starting VPN tunnel using \(AppConstants.tunnelBundleIdentifier)")
-        try activeManager.connection.startVPNTunnel(options: [
-            "profileID": profile.id.uuidString as NSString,
-            "profileJSON": profileJSON as NSString
-        ])
-        status = activeManager.connection.status
+        activeProfileID = profile.id
+        connectStartedAt = Date()
+        do {
+            try activeManager.connection.startVPNTunnel(options: [
+                "profileID": profile.id.uuidString as NSString,
+                "profileJSON": profileJSON as NSString
+            ])
+        } catch {
+            connectStartedAt = nil
+            throw error
+        }
+        setStatus(activeManager.connection.status, source: "start request")
         try? repository.appendTunnelLog("app startVPNTunnel accepted; waiting for iOS status update")
     }
 
     func disconnect() {
-        try? ProfileRepository().appendTunnelLog("app disconnect requested")
-        manager?.connection.stopVPNTunnel()
-        setStatus(manager?.connection.status ?? .invalid, source: "disconnect request")
+        try? repository.appendTunnelLog("app disconnect requested")
+        guard let manager else {
+            // The manager has not been loaded yet (very early tap): load it,
+            // then stop, rather than silently doing nothing.
+            Task {
+                await refresh()
+                self.manager?.connection.stopVPNTunnel()
+            }
+            return
+        }
+        manager.connection.stopVPNTunnel()
+        setStatus(manager.connection.status, source: "disconnect request")
+    }
+
+    private func waitForDisconnect(_ manager: NETunnelProviderManager) async {
+        for _ in 0..<50 {
+            let current = manager.connection.status
+            if current == .disconnected || current == .invalid {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    private func profileID(from manager: NETunnelProviderManager) -> UUID? {
+        let configuration = (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration
+        return (configuration?["profileID"] as? String).flatMap(UUID.init(uuidString:))
     }
 
     private func loadOrCreateManager() async throws -> NETunnelProviderManager {
@@ -128,19 +203,32 @@ final class VPNController: ObservableObject {
     }
 
     private func setStatus(_ newStatus: NEVPNStatus, source: String) {
-        status = newStatus
+        let previous = status
+        if previous != newStatus {
+            status = newStatus
+            // One haptic per transition, here rather than in the views, since
+            // several screens observe the same status.
+            if newStatus == .connected {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } else if newStatus == .disconnected, previous == .connecting,
+                      (try? repository.readTunnelMetrics())?.status == "failed" {
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+        }
+        if newStatus == .connected || newStatus == .disconnected || newStatus == .invalid {
+            connectStartedAt = nil
+        }
         guard lastLoggedStatusRawValue != newStatus.rawValue else {
             return
         }
         lastLoggedStatusRawValue = newStatus.rawValue
-        try? ProfileRepository().appendTunnelLog("app VPN status changed to \(newStatus.displayName) via \(source)")
+        try? repository.appendTunnelLog("app VPN status changed to \(newStatus.displayName) via \(source)")
         if newStatus == .disconnecting || newStatus == .disconnected {
             appendDisconnectMetricsSnapshot(newStatus)
         }
     }
 
     private func appendDisconnectMetricsSnapshot(_ status: NEVPNStatus) {
-        let repository = ProfileRepository()
         guard let metrics = try? repository.readTunnelMetrics() else {
             return
         }
