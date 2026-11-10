@@ -249,6 +249,23 @@ struct ConnectionHero: View {
         return metrics.lastError ?? metrics.engineLastError ?? L10n.string("Unknown")
     }
 
+    private var glowTint: Color {
+        if failureMessage != nil {
+            return .red
+        }
+        return status.tint == .secondary ? Color.accentColor : status.tint
+    }
+
+    /// Share of startup stages completed, for the ring around the button.
+    private var connectProgress: Double? {
+        guard status == .connecting || status == .reasserting else {
+            return nil
+        }
+        let current = ConnectStep.current(metrics: metrics, attemptStartedAt: vpn.connectStartedAt)
+        let index = steps.firstIndex(of: current) ?? 0
+        return (Double(index) + 0.5) / Double(steps.count)
+    }
+
     private var pollIntervalNanoseconds: UInt64 {
         switch status {
         case .connecting, .reasserting, .disconnecting:
@@ -261,9 +278,9 @@ struct ConnectionHero: View {
     }
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 12) {
             Button(action: toggle) {
-                PowerOrb(status: status, failed: failureMessage != nil)
+                PowerOrb(status: status, failed: failureMessage != nil, progress: connectProgress)
             }
             .buttonStyle(OrbButtonStyle())
             .disabled(status == .disconnecting)
@@ -274,7 +291,7 @@ struct ConnectionHero: View {
                 Text(failureMessage != nil
                     ? L10n.string("Couldn't connect")
                     : (status == .invalid ? NEVPNStatus.disconnected : status).displayName)
-                    .font(.title2.weight(.semibold))
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
                     .foregroundStyle(failureMessage != nil ? Color.red : Color.primary)
                     .id(failureMessage != nil ? -1 : status.rawValue)
                     .transition(.asymmetric(
@@ -290,11 +307,19 @@ struct ConnectionHero: View {
             detail
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
-        .padding(.horizontal, 18)
+        .padding(.top, 6)
+        .padding(.bottom, 22)
+        .padding(.horizontal, 16)
         .background(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(Color(.secondarySystemGroupedBackground))
+            ZStack {
+                Color(.secondarySystemGroupedBackground)
+                AmbientGlow(tint: glowTint, active: status == .connected || isBusy)
+            }
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 32, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
         )
         .animation(.spring(response: 0.45, dampingFraction: 0.85), value: status)
         .animation(.spring(response: 0.45, dampingFraction: 0.85), value: failureMessage)
@@ -387,11 +412,14 @@ struct ConnectionHero: View {
     }
 }
 
-/// The big power button: idle ring, sweeping arc while the tunnel is coming
-/// up or going down, and a slow breathing glow once it is connected.
+/// The big power button. Idle: a quiet ring. Connecting: a ring that fills
+/// as startup stages complete, with a light sweeping round it. Connected: a
+/// lit glass button that breathes and sends slow ripples outward.
 struct PowerOrb: View {
     let status: NEVPNStatus
     let failed: Bool
+    /// 0...1 while connecting; nil when there is nothing to measure.
+    var progress: Double?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -408,35 +436,61 @@ struct PowerOrb: View {
 
     private var isOn: Bool { status == .connected }
 
+    private let ringSize: CGFloat = 148
+    private let coreSize: CGFloat = 116
+
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion || !(isSpinning || isOn))) { context in
             let time = context.date.timeIntervalSinceReferenceDate
-            let breath = isOn && !reduceMotion ? (sin(time * 1.6) + 1) / 2 : 0
+            let breath = isOn && !reduceMotion ? (sin(time * 1.5) + 1) / 2 : 0
 
             ZStack {
-                Circle()
-                    .fill(tint.opacity(isOn ? 0.10 + 0.08 * breath : 0.08))
-                    .frame(width: 176, height: 176)
-                    .scaleEffect(1 + 0.07 * breath)
+                if isOn && !reduceMotion {
+                    ForEach(0..<3, id: \.self) { index in
+                        let phase = (time / 3.2 + Double(index) / 3).truncatingRemainder(dividingBy: 1)
+                        Circle()
+                            .stroke(tint.opacity((1 - phase) * 0.32), lineWidth: 1.5)
+                            .frame(width: ringSize + phase * 96, height: ringSize + phase * 96)
+                    }
+                }
 
                 Circle()
-                    .stroke(tint.opacity(isOn ? 0.9 : 0.18), lineWidth: 5)
-                    .frame(width: 136, height: 136)
+                    .fill(
+                        RadialGradient(
+                            colors: [tint.opacity(isOn ? 0.30 + 0.12 * breath : 0.16), tint.opacity(0)],
+                            center: .center,
+                            startRadius: coreSize / 2 - 8,
+                            endRadius: 118
+                        )
+                    )
+                    .frame(width: 236, height: 236)
+
+                Circle()
+                    .stroke(tint.opacity(isOn ? 0.95 : 0.16), lineWidth: 4)
+                    .frame(width: ringSize, height: ringSize)
 
                 if isSpinning {
                     Circle()
-                        .trim(from: 0, to: 0.3)
+                        .trim(from: 0, to: max(0.03, progress ?? 0))
+                        .stroke(tint, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                        .frame(width: ringSize, height: ringSize)
+                        .rotationEffect(.degrees(-90))
+                        .animation(.spring(response: 0.7, dampingFraction: 0.85), value: progress)
+
+                    Circle()
+                        .trim(from: 0, to: 0.22)
                         .stroke(
                             AngularGradient(
-                                colors: [tint.opacity(0), tint],
+                                colors: [.white.opacity(0), .white.opacity(0.85)],
                                 center: .center,
                                 startAngle: .degrees(0),
-                                endAngle: .degrees(108)
+                                endAngle: .degrees(80)
                             ),
-                            style: StrokeStyle(lineWidth: 5, lineCap: .round)
+                            style: StrokeStyle(lineWidth: 4, lineCap: .round)
                         )
-                        .frame(width: 136, height: 136)
-                        .rotationEffect(.degrees(reduceMotion ? 0 : time.truncatingRemainder(dividingBy: 1.2) / 1.2 * 360))
+                        .frame(width: ringSize, height: ringSize)
+                        .rotationEffect(.degrees(reduceMotion ? 0 : time.truncatingRemainder(dividingBy: 1.4) / 1.4 * 360))
+                        .blendMode(.plusLighter)
                         .transition(.opacity)
                 }
 
@@ -444,23 +498,96 @@ struct PowerOrb: View {
                     .fill(
                         isOn
                             ? AnyShapeStyle(LinearGradient(
-                                colors: [tint, tint.opacity(0.78)],
+                                colors: [tint.opacity(0.95), tint.opacity(0.72)],
                                 startPoint: .top,
                                 endPoint: .bottom
                             ))
-                            : AnyShapeStyle(Color(.tertiarySystemGroupedBackground))
+                            : AnyShapeStyle(.ultraThinMaterial)
                     )
-                    .frame(width: 108, height: 108)
-                    .shadow(color: tint.opacity(isOn ? 0.35 : 0), radius: 14, y: 6)
+                    .overlay(
+                        // Soft top highlight and hairline edge give the core
+                        // its glass look.
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [.white.opacity(isOn ? 0.34 : 0.14), .white.opacity(0)],
+                                    startPoint: .top,
+                                    endPoint: .center
+                                )
+                            )
+                    )
+                    .overlay(
+                        Circle().strokeBorder(.white.opacity(isOn ? 0.35 : 0.12), lineWidth: 1)
+                    )
+                    .frame(width: coreSize, height: coreSize)
+                    .shadow(color: tint.opacity(isOn ? 0.45 + 0.15 * breath : 0.12), radius: isOn ? 22 : 10, y: 8)
+                    .scaleEffect(1 + 0.015 * breath)
 
                 Image(systemName: failed ? "exclamationmark" : "power")
-                    .font(.system(size: 40, weight: .semibold))
+                    .font(.system(size: 42, weight: .semibold, design: .rounded))
                     .foregroundStyle(isOn ? Color.white : tint)
+                    .shadow(color: .black.opacity(isOn ? 0.18 : 0), radius: 3, y: 2)
             }
-            .frame(width: 190, height: 190)
+            .frame(width: 250, height: 250)
         }
-        .animation(.easeInOut(duration: 0.45), value: status)
-        .animation(.easeInOut(duration: 0.45), value: failed)
+        .animation(.easeInOut(duration: 0.5), value: status)
+        .animation(.easeInOut(duration: 0.5), value: failed)
+    }
+}
+
+/// Slow-drifting colour wash behind the hero. It takes the state colour, so
+/// the whole card warms to amber while connecting and settles into green.
+struct AmbientGlow: View {
+    let tint: Color
+    let active: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: reduceMotion || !active)) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
+            GeometryReader { proxy in
+                let width = proxy.size.width
+                let height = proxy.size.height
+                ZStack {
+                    Circle()
+                        .fill(tint.opacity(0.42))
+                        .frame(width: width * 0.8, height: width * 0.8)
+                        .offset(x: cos(time * 0.35) * width * 0.18 - width * 0.2, y: sin(time * 0.28) * 26 - height * 0.28)
+                    Circle()
+                        .fill(tint.opacity(0.26))
+                        .frame(width: width * 0.7, height: width * 0.7)
+                        .offset(x: sin(time * 0.3) * width * 0.2 + width * 0.25, y: cos(time * 0.24) * 30 + height * 0.3)
+                }
+                .frame(width: width, height: height)
+                .blur(radius: 70)
+            }
+        }
+        .animation(.easeInOut(duration: 0.9), value: tint)
+        .allowsHitTesting(false)
+    }
+}
+
+private extension View {
+    /// Liquid Glass where the OS has it, a thin material everywhere else.
+    @ViewBuilder
+    func glassCard(cornerRadius: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if #available(iOS 26.0, *) {
+            glassEffect(.regular, in: shape)
+        } else {
+            background(.ultraThinMaterial, in: shape)
+        }
+    }
+
+    /// Digits roll instead of snapping where the OS supports it.
+    @ViewBuilder
+    func numericTransition() -> some View {
+        if #available(iOS 16.0, *) {
+            contentTransition(.numericText())
+        } else {
+            self
+        }
     }
 }
 
@@ -512,11 +639,8 @@ struct ConnectProgressList: View {
                     .padding(.top, 2)
             }
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(.tertiarySystemGroupedBackground))
-        )
+        .padding(16)
+        .glassCard(cornerRadius: 20)
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: current)
     }
 }
@@ -540,7 +664,8 @@ struct RateTile: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(formatRate(rate))
-                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                    .font(.system(.body, design: .rounded).weight(.semibold).monospacedDigit())
+                    .numericTransition()
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 Text(formatBytes(total))
@@ -549,12 +674,9 @@ struct RateTile: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
+        .padding(14)
         .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(.tertiarySystemGroupedBackground))
-        )
+        .glassCard(cornerRadius: 20)
     }
 }
 
