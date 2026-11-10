@@ -307,3 +307,4 @@
 "Copy Log" = "کپی گزارش";
 "Delete Profile?" = "پروفایل حذف شود؟";
 "This removes the profile and its saved key from this device." = "پروفایل و کلید ذخیره‌شدهٔ آن از این دستگاه حذف می‌شود.";
+"Check the resolver address and key in this profile, then try again." = "نشانی ریزالور و کلید این پروفایل را بررسی کنید و دوباره تلاش کنید.";

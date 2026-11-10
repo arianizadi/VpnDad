@@ -307,3 +307,4 @@
 "Copy Log" = "Copy Log";
 "Delete Profile?" = "Delete Profile?";
 "This removes the profile and its saved key from this device." = "This removes the profile and its saved key from this device.";
+"Check the resolver address and key in this profile, then try again." = "Check the resolver address and key in this profile, then try again.";

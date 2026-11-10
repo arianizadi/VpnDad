@@ -31,7 +31,7 @@ struct ContentView: View {
                 }
 
                 if !model.profiles.isEmpty {
-                    Section("Profiles") {
+                    Section {
                         ForEach(model.profiles) { profile in
                             NavigationLink {
                                 ProfileDetailView(profile: profile, model: model, vpn: vpn)
@@ -46,6 +46,9 @@ struct ContentView: View {
                         .onDelete { offsets in
                             offsets.map { model.profiles[$0] }.forEach(model.delete)
                         }
+                    } header: {
+                        Text("Profiles")
+                            .textCase(nil)
                     }
                 }
             }
@@ -104,13 +107,13 @@ struct EmptyProfilesView: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Image(systemName: "lock.shield")
-                .font(.system(size: 52, weight: .light))
-                .foregroundStyle(Color.accentColor)
-                .padding(26)
-                .background(Circle().fill(Color.accentColor.opacity(0.12)))
+            TunnelView(status: .disconnected, failed: false, stageCount: 5, stageIndex: nil, bytesPerSecond: 0)
+                .scaleEffect(0.62)
+                .frame(width: 170, height: 170)
+                .background(Circle().fill(TunnelPalette.night))
+                .accessibilityHidden(true)
             Text("No Profiles")
-                .font(.title3.weight(.semibold))
+                .font(.system(size: 28, weight: .semibold, design: .serif))
             Text("Import a profile to get started.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -133,43 +136,50 @@ struct ProfileRow: View {
     let status: NEVPNStatus
     let showsDetail: Bool
 
+    private var isLive: Bool { status != .disconnected && status != .invalid }
+
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: profile.tunnelProtocol == .masterdns ? "network" : "antenna.radiowaves.left.and.right")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(status.tint == .secondary ? Color.accentColor : status.tint)
-                .frame(width: 36, height: 36)
-                .background(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill((status.tint == .secondary ? Color.accentColor : status.tint).opacity(0.14))
-                )
             VStack(alignment: .leading, spacing: 2) {
                 Text(profile.name)
                     .font(.body.weight(.medium))
-                if status != .disconnected, status != .invalid {
+                if isLive {
                     Text(status.displayName)
-                        .font(.caption)
-                        .foregroundStyle(status.tint)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 } else if showsDetail {
-                    Text("\(profile.tunnelProtocol.rawValue) · \(profile.domain)")
-                        .font(.caption)
+                    Text(profile.domain)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
             Spacer(minLength: 0)
-            if status == .connected {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+            if isLive {
+                // The same lamp that lights the tunnel marks the live profile.
+                Circle()
+                    .fill(status == .connected ? TunnelPalette.lamp : TunnelPalette.mist.opacity(0.6))
+                    .frame(width: 9, height: 9)
+                    .shadow(color: TunnelPalette.lamp.opacity(status == .connected ? 0.8 : 0), radius: 5)
                     .transition(.scale.combined(with: .opacity))
             }
         }
-        .padding(.vertical, 3)
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: status)
+        .padding(.vertical, 4)
+        .animation(.easeInOut(duration: 0.3), value: status)
     }
 }
 
 // MARK: - Connection hero
+
+/// The app tunnels traffic through DNS, so its one piece of imagery is a
+/// tunnel seen head-on: a night-blue shaft with a lamp at the far end.
+enum TunnelPalette {
+    static let night = Color(red: 0.043, green: 0.071, blue: 0.125)
+    static let dusk = Color(red: 0.240, green: 0.330, blue: 0.530)
+    static let mist = Color(red: 0.790, green: 0.830, blue: 0.920)
+    static let lamp = Color(red: 1.000, green: 0.770, blue: 0.420)
+    static let ember = Color(red: 1.000, green: 0.480, blue: 0.350)
+}
 
 /// Startup stages reported by the tunnel extension, in order.
 enum ConnectStep: Int, CaseIterable, Identifiable {
@@ -233,10 +243,18 @@ struct ConnectionHero: View {
         status == .connecting || status == .reasserting || status == .disconnecting
     }
 
+    private var isConnecting: Bool {
+        status == .connecting || status == .reasserting
+    }
+
     private var steps: [ConnectStep] {
         profile.tunnelProtocol == .masterdns
             ? ConnectStep.allCases
             : ConnectStep.allCases.filter { $0 != .handshake }
+    }
+
+    private var currentStep: ConnectStep {
+        ConnectStep.current(metrics: metrics, attemptStartedAt: vpn.connectStartedAt)
     }
 
     /// Why the last attempt for this profile ended, if it failed recently.
@@ -247,23 +265,6 @@ struct ConnectionHero: View {
             return nil
         }
         return metrics.lastError ?? metrics.engineLastError ?? L10n.string("Unknown")
-    }
-
-    private var glowTint: Color {
-        if failureMessage != nil {
-            return .red
-        }
-        return status.tint == .secondary ? Color.accentColor : status.tint
-    }
-
-    /// Share of startup stages completed, for the ring around the button.
-    private var connectProgress: Double? {
-        guard status == .connecting || status == .reasserting else {
-            return nil
-        }
-        let current = ConnectStep.current(metrics: metrics, attemptStartedAt: vpn.connectStartedAt)
-        let index = steps.firstIndex(of: current) ?? 0
-        return (Double(index) + 0.5) / Double(steps.count)
     }
 
     private var pollIntervalNanoseconds: UInt64 {
@@ -278,51 +279,59 @@ struct ConnectionHero: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 6) {
             Button(action: toggle) {
-                PowerOrb(status: status, failed: failureMessage != nil, progress: connectProgress)
+                TunnelView(
+                    status: status,
+                    failed: failureMessage != nil,
+                    stageCount: steps.count,
+                    stageIndex: isConnecting ? (steps.firstIndex(of: currentStep) ?? 0) : nil,
+                    bytesPerSecond: metrics?.totalBytesPerSecond ?? 0
+                )
             }
             .buttonStyle(OrbButtonStyle())
             .disabled(status == .disconnecting)
             .accessibilityLabel(status == .connected || isBusy ? Text("Disconnect") : Text("Connect"))
 
-            VStack(spacing: 4) {
-                // `.invalid` just means no VPN configuration is installed yet.
-                Text(failureMessage != nil
-                    ? L10n.string("Couldn't connect")
-                    : (status == .invalid ? NEVPNStatus.disconnected : status).displayName)
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .foregroundStyle(failureMessage != nil ? Color.red : Color.primary)
-                    .id(failureMessage != nil ? -1 : status.rawValue)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .bottom).combined(with: .opacity),
-                        removal: .move(edge: .top).combined(with: .opacity)
-                    ))
-                subtitle
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
+            // `.invalid` just means no VPN configuration is installed yet.
+            Text(failureMessage != nil
+                ? L10n.string("Couldn't connect")
+                : (status == .invalid ? NEVPNStatus.disconnected : status).displayName)
+                .font(.system(size: 34, weight: .semibold, design: .serif))
+                .foregroundStyle(.white)
+                .id(failureMessage != nil ? -1 : status.rawValue)
+                .transition(.opacity)
+
+            caption
+                .font(.subheadline)
+                .foregroundStyle(TunnelPalette.mist.opacity(0.78))
+                .multilineTextAlignment(.center)
 
             detail
+                .padding(.top, 14)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 6)
-        .padding(.bottom, 22)
-        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 26)
+        .padding(.horizontal, 22)
         .background(
             ZStack {
-                Color(.secondarySystemGroupedBackground)
-                AmbientGlow(tint: glowTint, active: status == .connected || isBusy)
+                TunnelPalette.night
+                // Light spilling out of the tunnel once the far end is lit.
+                RadialGradient(
+                    colors: [TunnelPalette.lamp.opacity(0.17), TunnelPalette.lamp.opacity(0)],
+                    center: UnitPoint(x: 0.5, y: 0.3),
+                    startRadius: 30,
+                    endRadius: 240
+                )
+                .opacity(status == .connected ? 1 : 0)
             }
         )
-        .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 32, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
-        )
-        .animation(.spring(response: 0.45, dampingFraction: 0.85), value: status)
-        .animation(.spring(response: 0.45, dampingFraction: 0.85), value: failureMessage)
+        .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+        // The panel is night in both appearances: it is a view into the tunnel.
+        .environment(\.colorScheme, .dark)
+        .animation(.easeInOut(duration: 0.9), value: status)
+        .animation(.easeInOut(duration: 0.4), value: failureMessage)
         .onChange(of: vpn.status) { _ in
             // Pick up the extension's final metrics (e.g. a failure reason)
             // right away instead of on the next poll.
@@ -337,25 +346,24 @@ struct ConnectionHero: View {
     }
 
     @ViewBuilder
-    private var subtitle: some View {
+    private var caption: some View {
         if let failureMessage {
-            Text(cleanLogLine(failureMessage))
-                .lineLimit(4)
+            VStack(spacing: 6) {
+                Text(cleanLogLine(failureMessage))
+                    .lineLimit(4)
+                Text("Check the resolver address and key in this profile, then try again.")
+                    .foregroundStyle(TunnelPalette.mist.opacity(0.55))
+            }
         } else if status == .connected {
-            HStack(spacing: 6) {
+            VStack(spacing: 2) {
                 if showsProfileName {
                     Text(profile.name)
-                    Text("·")
                 }
                 UptimeText(startedAt: metrics?.startedAt)
             }
-        } else if isBusy {
-            if status == .disconnecting {
-                Text(profile.name)
-            } else {
-                ElapsedText(since: vpn.connectStartedAt)
-            }
-        } else if showsProfileName {
+        } else if isConnecting {
+            ElapsedText(since: vpn.connectStartedAt)
+        } else if showsProfileName || status == .disconnecting {
             Text(profile.name)
         } else {
             Text("Tap to connect")
@@ -364,31 +372,32 @@ struct ConnectionHero: View {
 
     @ViewBuilder
     private var detail: some View {
-        if status == .connecting || status == .reasserting {
+        if isConnecting {
             ConnectProgressList(
                 steps: steps,
-                current: ConnectStep.current(metrics: metrics, attemptStartedAt: vpn.connectStartedAt),
+                current: currentStep,
                 liveDetail: metrics?.lastLogLine.map(cleanLogLine)
             )
-            .transition(.opacity.combined(with: .move(edge: .bottom)))
+            .transition(.opacity)
         } else if status == .connected, let metrics {
-            HStack(spacing: 10) {
-                RateTile(
+            HStack(spacing: 0) {
+                RateColumn(
                     title: "Download",
                     systemImage: "arrow.down",
-                    tint: .green,
                     rate: metrics.downloadBytesPerSecond,
                     total: metrics.downloadBytes
                 )
-                RateTile(
+                Rectangle()
+                    .fill(TunnelPalette.mist.opacity(0.16))
+                    .frame(width: 1, height: 40)
+                RateColumn(
                     title: "Upload",
                     systemImage: "arrow.up",
-                    tint: .blue,
                     rate: metrics.uploadBytesPerSecond,
                     total: metrics.uploadBytes
                 )
             }
-            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            .transition(.opacity)
         }
     }
 
@@ -412,174 +421,142 @@ struct ConnectionHero: View {
     }
 }
 
-/// The big power button. Idle: a quiet ring. Connecting: a ring that fills
-/// as startup stages complete, with a light sweeping round it. Connected: a
-/// lit glass button that breathes and sends slow ripples outward.
-struct PowerOrb: View {
-    let status: NEVPNStatus
-    let failed: Bool
-    /// 0...1 while connecting; nil when there is nothing to measure.
-    var progress: Double?
+/// Accumulates ring travel so a change of speed never makes the rings jump.
+private final class FlowClock {
+    private var last: Double?
+    private var phase = 0.0
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var tint: Color {
-        if failed {
-            return .red
+    func advance(to time: Double, speed: Double) -> Double {
+        if let last {
+            phase += min(max(time - last, 0), 0.1) * speed
         }
-        return status.tint == .secondary ? Color.accentColor : status.tint
-    }
-
-    private var isSpinning: Bool {
-        status == .connecting || status == .reasserting || status == .disconnecting
-    }
-
-    private var isOn: Bool { status == .connected }
-
-    private let ringSize: CGFloat = 148
-    private let coreSize: CGFloat = 116
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion || !(isSpinning || isOn))) { context in
-            let time = context.date.timeIntervalSinceReferenceDate
-            let breath = isOn && !reduceMotion ? (sin(time * 1.5) + 1) / 2 : 0
-
-            ZStack {
-                if isOn && !reduceMotion {
-                    ForEach(0..<3, id: \.self) { index in
-                        let phase = (time / 3.2 + Double(index) / 3).truncatingRemainder(dividingBy: 1)
-                        Circle()
-                            .stroke(tint.opacity((1 - phase) * 0.32), lineWidth: 1.5)
-                            .frame(width: ringSize + phase * 96, height: ringSize + phase * 96)
-                    }
-                }
-
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [tint.opacity(isOn ? 0.30 + 0.12 * breath : 0.16), tint.opacity(0)],
-                            center: .center,
-                            startRadius: coreSize / 2 - 8,
-                            endRadius: 118
-                        )
-                    )
-                    .frame(width: 236, height: 236)
-
-                Circle()
-                    .stroke(tint.opacity(isOn ? 0.95 : 0.16), lineWidth: 4)
-                    .frame(width: ringSize, height: ringSize)
-
-                if isSpinning {
-                    Circle()
-                        .trim(from: 0, to: max(0.03, progress ?? 0))
-                        .stroke(tint, style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                        .frame(width: ringSize, height: ringSize)
-                        .rotationEffect(.degrees(-90))
-                        .animation(.spring(response: 0.7, dampingFraction: 0.85), value: progress)
-
-                    Circle()
-                        .trim(from: 0, to: 0.22)
-                        .stroke(
-                            AngularGradient(
-                                colors: [.white.opacity(0), .white.opacity(0.85)],
-                                center: .center,
-                                startAngle: .degrees(0),
-                                endAngle: .degrees(80)
-                            ),
-                            style: StrokeStyle(lineWidth: 4, lineCap: .round)
-                        )
-                        .frame(width: ringSize, height: ringSize)
-                        .rotationEffect(.degrees(reduceMotion ? 0 : time.truncatingRemainder(dividingBy: 1.4) / 1.4 * 360))
-                        .blendMode(.plusLighter)
-                        .transition(.opacity)
-                }
-
-                Circle()
-                    .fill(
-                        isOn
-                            ? AnyShapeStyle(LinearGradient(
-                                colors: [tint.opacity(0.95), tint.opacity(0.72)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ))
-                            : AnyShapeStyle(.ultraThinMaterial)
-                    )
-                    .overlay(
-                        // Soft top highlight and hairline edge give the core
-                        // its glass look.
-                        Circle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [.white.opacity(isOn ? 0.34 : 0.14), .white.opacity(0)],
-                                    startPoint: .top,
-                                    endPoint: .center
-                                )
-                            )
-                    )
-                    .overlay(
-                        Circle().strokeBorder(.white.opacity(isOn ? 0.35 : 0.12), lineWidth: 1)
-                    )
-                    .frame(width: coreSize, height: coreSize)
-                    .shadow(color: tint.opacity(isOn ? 0.45 + 0.15 * breath : 0.12), radius: isOn ? 22 : 10, y: 8)
-                    .scaleEffect(1 + 0.015 * breath)
-
-                Image(systemName: failed ? "exclamationmark" : "power")
-                    .font(.system(size: 42, weight: .semibold, design: .rounded))
-                    .foregroundStyle(isOn ? Color.white : tint)
-                    .shadow(color: .black.opacity(isOn ? 0.18 : 0), radius: 3, y: 2)
-            }
-            .frame(width: 250, height: 250)
-        }
-        .animation(.easeInOut(duration: 0.5), value: status)
-        .animation(.easeInOut(duration: 0.5), value: failed)
+        last = time
+        phase = phase.truncatingRemainder(dividingBy: 1)
+        return phase
     }
 }
 
-/// Slow-drifting colour wash behind the hero. It takes the state colour, so
-/// the whole card warms to amber while connecting and settles into green.
-struct AmbientGlow: View {
-    let tint: Color
-    let active: Bool
+/// The tunnel, looking down its length, with the power button as the lamp at
+/// the far end.
+///
+/// - Off: the shaft's rings sit dark.
+/// - Connecting: one ring per startup stage lights from the mouth inward, so
+///   the picture is the progress.
+/// - Connected: the lamp is lit and rings travel toward it at a pace set by
+///   real throughput — an idle tunnel drifts, a busy one streams.
+struct TunnelView: View {
+    let status: NEVPNStatus
+    let failed: Bool
+    let stageCount: Int
+    /// Stage in progress while connecting; nil otherwise.
+    let stageIndex: Int?
+    let bytesPerSecond: Double
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var clock = FlowClock()
+
+    private let size: CGFloat = 264
+    private let coreDiameter: CGFloat = 92
+
+    private var isOn: Bool { status == .connected }
+
+    private var isBusy: Bool {
+        status == .connecting || status == .reasserting || status == .disconnecting
+    }
+
+    /// Ring cycles per second: a slow drift when idle, faster with traffic.
+    private var flowSpeed: Double {
+        let load = min(1, log10(1 + max(0, bytesPerSecond) / 1024) / 3)
+        return 0.06 + 0.34 * load
+    }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: reduceMotion || !active)) { context in
-            let time = context.date.timeIntervalSinceReferenceDate
-            GeometryReader { proxy in
-                let width = proxy.size.width
-                let height = proxy.size.height
-                ZStack {
-                    Circle()
-                        .fill(tint.opacity(0.42))
-                        .frame(width: width * 0.8, height: width * 0.8)
-                        .offset(x: cos(time * 0.35) * width * 0.18 - width * 0.2, y: sin(time * 0.28) * 26 - height * 0.28)
-                    Circle()
-                        .fill(tint.opacity(0.26))
-                        .frame(width: width * 0.7, height: width * 0.7)
-                        .offset(x: sin(time * 0.3) * width * 0.2 + width * 0.25, y: cos(time * 0.24) * 30 + height * 0.3)
+        ZStack {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion || !(isOn || isBusy))) { context in
+                Canvas { canvas, canvasSize in
+                    draw(in: &canvas, size: canvasSize, time: context.date.timeIntervalSinceReferenceDate)
                 }
-                .frame(width: width, height: height)
-                .blur(radius: 70)
+            }
+
+            lamp
+        }
+        .frame(width: size, height: size)
+        .contentShape(Circle())
+    }
+
+    private var lamp: some View {
+        ZStack {
+            Circle()
+                .fill(
+                    isOn
+                        ? AnyShapeStyle(RadialGradient(
+                            colors: [.white, TunnelPalette.lamp],
+                            center: .center,
+                            startRadius: 2,
+                            endRadius: coreDiameter / 2
+                        ))
+                        : AnyShapeStyle(failed ? TunnelPalette.ember.opacity(0.9) : TunnelPalette.dusk.opacity(0.42))
+                )
+                .overlay(
+                    Circle().strokeBorder(TunnelPalette.mist.opacity(isOn ? 0 : 0.22), lineWidth: 1)
+                )
+                .shadow(color: TunnelPalette.lamp.opacity(isOn ? 0.75 : 0), radius: 34)
+
+            Image(systemName: failed ? "exclamationmark" : "power")
+                .font(.system(size: 32, weight: .semibold))
+                .foregroundStyle(isOn || failed ? TunnelPalette.night : TunnelPalette.mist)
+        }
+        .frame(width: coreDiameter, height: coreDiameter)
+        .animation(.easeInOut(duration: 0.9), value: status)
+        .animation(.easeInOut(duration: 0.4), value: failed)
+    }
+
+    private func draw(in canvas: inout GraphicsContext, size canvasSize: CGSize, time: Double) {
+        let center = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
+        let mouth = min(canvasSize.width, canvasSize.height) / 2 - 3
+        let far = coreDiameter / 2 + 12
+
+        func ring(radius: CGFloat, color: Color, width: CGFloat) {
+            let rect = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+            canvas.stroke(Path(ellipseIn: rect), with: .color(color), lineWidth: width)
+        }
+
+        if isOn {
+            let phase = reduceMotion ? 0.35 : clock.advance(to: time, speed: flowSpeed)
+            let count = 6
+            for index in 0..<count {
+                // 0 at the mouth, 1 at the lamp. Rings bunch up with depth.
+                let travel = (phase + Double(index) / Double(count)).truncatingRemainder(dividingBy: 1)
+                let depth = pow(travel, 0.62)
+                let radius = mouth - (mouth - far) * depth
+                let opacity = sin(travel * .pi) * 0.55 + 0.06
+                ring(radius: radius, color: TunnelPalette.lamp.opacity(opacity), width: 2.6 - 1.7 * depth)
+            }
+            return
+        }
+
+        let count = max(stageCount, 2)
+        for index in 0..<count {
+            let depth = pow(Double(index) / Double(count - 1), 0.62)
+            let radius = mouth - (mouth - far) * depth
+            let width = 2.6 - 1.4 * depth
+            guard let stageIndex else {
+                ring(radius: radius, color: TunnelPalette.dusk.opacity(failed ? 0.35 : 0.6), width: width)
+                continue
+            }
+            if index < stageIndex {
+                ring(radius: radius, color: TunnelPalette.mist.opacity(0.9), width: width)
+            } else if index == stageIndex {
+                let pulse = reduceMotion ? 0.6 : (sin(time * 3.2) + 1) / 2
+                ring(radius: radius, color: TunnelPalette.mist.opacity(0.3 + 0.55 * pulse), width: width)
+            } else {
+                ring(radius: radius, color: TunnelPalette.dusk.opacity(0.6), width: width)
             }
         }
-        .animation(.easeInOut(duration: 0.9), value: tint)
-        .allowsHitTesting(false)
     }
 }
 
 private extension View {
-    /// Liquid Glass where the OS has it, a thin material everywhere else.
-    @ViewBuilder
-    func glassCard(cornerRadius: CGFloat) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        if #available(iOS 26.0, *) {
-            glassEffect(.regular, in: shape)
-        } else {
-            background(.ultraThinMaterial, in: shape)
-        }
-    }
-
     /// Digits roll instead of snapping where the OS supports it.
     @ViewBuilder
     func numericTransition() -> some View {
@@ -594,89 +571,85 @@ private extension View {
 struct OrbButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
 
+/// The startup stages as a plain list. It is a real sequence, so it reads
+/// top to bottom in the order the rings light.
 struct ConnectProgressList: View {
     let steps: [ConnectStep]
     let current: ConnectStep
     let liveDetail: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 9) {
             ForEach(steps) { step in
                 HStack(spacing: 10) {
                     ZStack {
                         if step.rawValue < current.rawValue {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(TunnelPalette.mist)
                                 .transition(.scale.combined(with: .opacity))
                         } else if step == current {
                             ProgressView()
                                 .controlSize(.small)
+                                .tint(TunnelPalette.mist)
                         } else {
-                            Image(systemName: "circle")
-                                .foregroundStyle(.tertiary)
+                            Circle()
+                                .fill(TunnelPalette.dusk.opacity(0.8))
+                                .frame(width: 5, height: 5)
                         }
                     }
-                    .frame(width: 20, height: 20)
+                    .frame(width: 18, height: 18)
 
                     Text(step.title)
                         .font(.subheadline.weight(step == current ? .semibold : .regular))
-                        .foregroundStyle(step.rawValue > current.rawValue ? .secondary : .primary)
-                    Spacer(minLength: 0)
+                        .foregroundStyle(
+                            step.rawValue > current.rawValue
+                                ? TunnelPalette.mist.opacity(0.45)
+                                : Color.white
+                        )
                 }
             }
 
             if let liveDetail, !liveDetail.isEmpty {
                 Text(liveDetail)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                    .foregroundStyle(TunnelPalette.mist.opacity(0.5))
                     .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 2)
+                    .padding(.top, 4)
             }
         }
-        .padding(16)
-        .glassCard(cornerRadius: 20)
-        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: current)
+        .frame(maxWidth: 300, alignment: .leading)
+        .animation(.easeInOut(duration: 0.35), value: current)
     }
 }
 
-struct RateTile: View {
+struct RateColumn: View {
     let title: String
     let systemImage: String
-    let tint: Color
     let rate: Double
     let total: UInt64
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(tint)
-                .frame(width: 30, height: 30)
-                .background(Circle().fill(tint.opacity(0.15)))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(L10n.string(title))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(formatRate(rate))
-                    .font(.system(.body, design: .rounded).weight(.semibold).monospacedDigit())
-                    .numericTransition()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                Text(formatBytes(total))
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
+        VStack(spacing: 3) {
+            Label(L10n.string(title), systemImage: systemImage)
+                .font(.caption)
+                .foregroundStyle(TunnelPalette.mist.opacity(0.7))
+            Text(formatRate(rate))
+                .font(.title3.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .numericTransition()
+            Text(formatBytes(total))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(TunnelPalette.mist.opacity(0.55))
         }
-        .padding(14)
         .frame(maxWidth: .infinity)
-        .glassCard(cornerRadius: 20)
     }
 }
 

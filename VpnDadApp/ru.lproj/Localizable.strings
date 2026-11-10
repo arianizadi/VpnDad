@@ -307,3 +307,4 @@
 "Copy Log" = "Скопировать журнал";
 "Delete Profile?" = "Удалить профиль?";
 "This removes the profile and its saved key from this device." = "Профиль и сохранённый ключ будут удалены с этого устройства.";
+"Check the resolver address and key in this profile, then try again." = "Проверьте адрес резолвера и ключ в этом профиле и повторите попытку.";
